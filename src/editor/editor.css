@@ -1,0 +1,308 @@
+/*
+ * Shared editor styles: used inside the overlay's Shadow DOM (via a
+ * constructed stylesheet) and on the review page. Every selector is scoped
+ * under .don-ui so nothing leaks into Figma or extension pages.
+ */
+.don-ui {
+  --don-bg: rgba(24, 24, 27, 0.95);
+  --don-fg: #f4f4f5;
+  --don-muted: #a1a1aa;
+  --don-hover: rgba(255, 255, 255, 0.1);
+  --don-accent: #1c7ed6;
+  --don-accent-fg: #ffffff;
+  --don-border: rgba(255, 255, 255, 0.14);
+  --don-warn-bg: #fff4d6;
+  --don-warn-fg: #4a3300;
+  --don-error-bg: #ffe3e3;
+  --don-error-fg: #6b0f0f;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--don-fg);
+  -webkit-font-smoothing: antialiased;
+}
+
+.don-ui *,
+.don-ui *::before,
+.don-ui *::after {
+  box-sizing: border-box;
+}
+
+/* ---------------------------------------------------------------- canvas */
+
+.don-canvas {
+  display: block;
+  overflow: visible;
+  pointer-events: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.don-canvas.is-interactive {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+.don-canvas.is-interactive[data-tool='select'] {
+  cursor: default;
+}
+
+.don-canvas.is-interactive[data-tool='text'],
+.don-canvas.is-interactive[data-tool='sticky-note'] {
+  cursor: text;
+}
+
+.don-canvas.is-interactive[data-tool='eraser'] {
+  cursor: cell;
+}
+
+.don-text-editor::placeholder {
+  color: rgba(0, 0, 0, 0.4);
+}
+
+/* --------------------------------------------------------------- toolbar */
+
+.don-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--don-bg);
+  color: var(--don-fg);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.28),
+    0 0 0 1px var(--don-border);
+  pointer-events: auto;
+  user-select: none;
+  -webkit-user-select: none;
+  white-space: nowrap;
+}
+
+.don-group {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.don-divider {
+  width: 1px;
+  height: 20px;
+  margin: 0 4px;
+  background: var(--don-border);
+  flex: none;
+}
+
+.don-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  flex: none;
+}
+
+.don-btn:hover:not(:disabled) {
+  background: var(--don-hover);
+}
+
+.don-btn.is-active {
+  background: var(--don-accent);
+  color: var(--don-accent-fg);
+}
+
+.don-btn.is-danger:hover:not(:disabled) {
+  background: #c92a2a;
+  color: #fff;
+}
+
+.don-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.don-btn:focus-visible,
+.don-text-btn:focus-visible,
+.don-swatch-btn:focus-visible {
+  outline: 2px solid var(--don-accent);
+  outline-offset: 1px;
+}
+
+.don-text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--don-hover);
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  flex: none;
+}
+
+.don-text-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.don-text-btn.is-primary {
+  background: var(--don-accent);
+  color: var(--don-accent-fg);
+}
+
+.don-text-btn.is-primary:hover {
+  background: #1971c2;
+}
+
+.don-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 30px;
+  color: var(--don-muted);
+  cursor: grab;
+  touch-action: none;
+  flex: none;
+}
+
+.don-grip:active {
+  cursor: grabbing;
+}
+
+.don-chip {
+  display: inline-block;
+  max-width: 180px;
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--don-muted);
+  font-size: 12px;
+}
+
+.don-swatch {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+
+.don-popover-anchor {
+  position: relative;
+}
+
+.don-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: -4px;
+  display: grid;
+  grid-template-columns: repeat(4, 28px);
+  gap: 4px;
+  padding: 6px;
+  border-radius: 10px;
+  background: var(--don-bg);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.3),
+    0 0 0 1px var(--don-border);
+  z-index: 2;
+}
+
+.don-swatch-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.don-swatch-btn:hover {
+  background: var(--don-hover);
+}
+
+.don-swatch-btn.is-active {
+  box-shadow: inset 0 0 0 2px var(--don-fg);
+}
+
+.don-size-dot {
+  display: block;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.don-save {
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--don-muted);
+}
+
+.don-save.is-ok {
+  color: #8ce99a;
+}
+
+.don-save.is-error {
+  color: #ffa8a8;
+  font-weight: 600;
+}
+
+/* -------------------------------------------------------- notices/banners */
+
+.don-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(640px, calc(100vw - 32px));
+  padding: 8px 8px 8px 12px;
+  border-radius: 10px;
+  background: var(--don-warn-bg);
+  color: var(--don-warn-fg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  pointer-events: auto;
+  font-size: 12.5px;
+}
+
+.don-banner.is-error {
+  background: var(--don-error-bg);
+  color: var(--don-error-fg);
+}
+
+.don-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.don-banner .don-text-btn {
+  height: 26px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.don-banner .don-text-btn:hover {
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.don-banner .don-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.don-banner .don-btn {
+  width: 26px;
+  height: 26px;
+}

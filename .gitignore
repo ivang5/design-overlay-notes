@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-e2e/
+*.zip
+.vite/
+test-results/
+.DS_Store
+/*.md
+!/README.md

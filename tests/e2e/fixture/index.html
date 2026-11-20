@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fixture File – Figma</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #e9ecef;
+        font-family: sans-serif;
+      }
+      #frame {
+        position: absolute;
+        left: 200px;
+        top: 150px;
+        width: 600px;
+        height: 400px;
+        background: #ffffff;
+        border: 1px solid #ced4da;
+      }
+      #fake-button {
+        position: absolute;
+        left: 900px;
+        top: 600px;
+        width: 160px;
+        height: 48px;
+        background: #228be6;
+        color: #fff;
+        border: 0;
+        font-size: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Mimics an app that listens for keys/pointers on the document, like Figma's canvas. -->
+    <div id="frame"></div>
+    <button id="fake-button" type="button">Figma button</button>
+    <script>
+      window.__counts = { keydown: 0, pointerdown: 0, wheel: 0, buttonClicks: 0, paste: 0 };
+      document.addEventListener('keydown', () => window.__counts.keydown++);
+      document.addEventListener('pointerdown', () => window.__counts.pointerdown++);
+      document.addEventListener('wheel', () => window.__counts.wheel++, { passive: true });
+      document.addEventListener('paste', () => window.__counts.paste++);
+      document.getElementById('fake-button').addEventListener('click', () => window.__counts.buttonClicks++);
+    </script>
+  </body>
+</html>

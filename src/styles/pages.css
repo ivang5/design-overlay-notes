@@ -1,0 +1,239 @@
+/* Base styles for extension pages (side panel, review page). */
+
+:root {
+  --dp-bg: #ffffff;
+  --dp-surface: #f6f7f9;
+  --dp-surface-2: #eef0f3;
+  --dp-border: #e1e4e8;
+  --dp-text: #1d1f23;
+  --dp-muted: #646a73;
+  --dp-accent: #1c7ed6;
+  --dp-accent-hover: #1971c2;
+  --dp-accent-soft: #e7f1fc;
+  --dp-danger: #c92a2a;
+  --dp-danger-soft: #fdeaea;
+  --dp-warn-soft: #fff4d6;
+  --dp-warn-text: #4a3300;
+  --dp-ok-soft: #e6f6ea;
+  --dp-ok-text: #1b5e2b;
+  --dp-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.1);
+  --dp-radius: 10px;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --dp-bg: #17181b;
+    --dp-surface: #1f2125;
+    --dp-surface-2: #2a2d32;
+    --dp-border: #34373d;
+    --dp-text: #ececee;
+    --dp-muted: #9ca1aa;
+    --dp-accent: #4dabf7;
+    --dp-accent-hover: #74c0fc;
+    --dp-accent-soft: #1b2b3d;
+    --dp-danger: #ff8787;
+    --dp-danger-soft: #3b1f21;
+    --dp-warn-soft: #3a3016;
+    --dp-warn-text: #ffe8a3;
+    --dp-ok-soft: #173322;
+    --dp-ok-text: #b2f2bb;
+    --dp-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    color-scheme: dark;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--dp-bg);
+  color: var(--dp-text);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--dp-accent);
+}
+
+input,
+textarea,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+.dp-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--dp-border);
+  border-radius: 8px;
+  background: var(--dp-bg);
+  color: var(--dp-text);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dp-btn:hover:not(:disabled) {
+  background: var(--dp-surface-2);
+}
+
+.dp-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.dp-btn.is-primary {
+  border-color: transparent;
+  background: var(--dp-accent);
+  color: #fff;
+}
+
+.dp-btn.is-primary:hover:not(:disabled) {
+  background: var(--dp-accent-hover);
+}
+
+.dp-btn.is-danger {
+  border-color: transparent;
+  background: var(--dp-danger);
+  color: #fff;
+}
+
+.dp-btn.is-ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+.dp-btn.is-small {
+  height: 26px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.dp-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dp-muted);
+  cursor: pointer;
+  flex: none;
+}
+
+.dp-icon-btn:hover:not(:disabled) {
+  background: var(--dp-surface-2);
+  color: var(--dp-text);
+}
+
+.dp-icon-btn.is-active {
+  background: var(--dp-accent-soft);
+  color: var(--dp-accent);
+}
+
+.dp-icon-btn.is-danger:hover:not(:disabled) {
+  background: var(--dp-danger-soft);
+  color: var(--dp-danger);
+}
+
+.dp-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.dp-btn:focus-visible,
+.dp-icon-btn:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--dp-accent);
+  outline-offset: 1px;
+}
+
+.dp-muted {
+  color: var(--dp-muted);
+}
+
+.dp-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.dp-message {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px 8px 8px 12px;
+  border-radius: 8px;
+  background: var(--dp-surface-2);
+  font-size: 12.5px;
+}
+
+.dp-message.is-error {
+  background: var(--dp-danger-soft);
+  color: var(--dp-danger);
+}
+
+.dp-message.is-warn {
+  background: var(--dp-warn-soft);
+  color: var(--dp-warn-text);
+}
+
+.dp-message.is-ok {
+  background: var(--dp-ok-soft);
+  color: var(--dp-ok-text);
+}
+
+.dp-message-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dp-message ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.dp-message .dp-icon-btn {
+  color: inherit;
+  width: 22px;
+  height: 22px;
+}
+
+.dp-confirm {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dp-danger);
+}

@@ -1,0 +1,40 @@
+{
+  "name": "design-overlay-notes",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Private, local-first Chrome extension for drawing personal notes over Figma designs.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:e2e": "vite build --mode e2e",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "vite build --mode e2e && node tests/e2e/smoke.mjs",
+    "icons": "node scripts/generate-icons.mjs",
+    "package": "npm run build && cd dist && zip -qr ../design-overlay-notes.zip ."
+  },
+  "dependencies": {
+    "fflate": "0.8.3",
+    "idb": "8.0.4",
+    "lucide-react": "1.77.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "3.0.0",
+    "@types/chrome": "0.3.7",
+    "@types/node": "22.20.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "fake-indexeddb": "6.2.8",
+    "jsdom": "31.0.1",
+    "playwright": "1.65.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.8",
+    "vitest": "5.1.1"
+  }
+}

@@ -1,0 +1,57 @@
+/* Live-overlay-only styles (injected into the closed Shadow DOM). */
+
+.don-root {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  outline: none;
+  overflow: hidden;
+}
+
+.don-live-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Obvious indicator that drawing mode is intercepting input. */
+.don-mode-frame {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 3px rgba(28, 126, 214, 0.85);
+}
+
+.don-floating {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  max-width: calc(100vw - 16px);
+}
+
+.don-floating.is-placed {
+  transform: none;
+  align-items: flex-start;
+}
+
+.don-floating > * {
+  pointer-events: auto;
+}
+
+.don-toolbar {
+  max-width: calc(100vw - 16px);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+/* The colour popover must escape the scrolling toolbar. */
+.don-toolbar:has(.don-popover) {
+  overflow: visible;
+}

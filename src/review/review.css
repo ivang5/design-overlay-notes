@@ -1,0 +1,106 @@
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--dp-surface-2);
+}
+
+.rv-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.rv-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--dp-border);
+  background: var(--dp-bg);
+}
+
+.rv-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.rv-title {
+  max-width: 640px;
+  height: 28px;
+  padding: 0 6px;
+  margin-left: -6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.rv-title:hover {
+  border-color: var(--dp-border);
+}
+
+.rv-title:focus {
+  border-color: var(--dp-accent);
+  outline: none;
+}
+
+.rv-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--dp-muted);
+  font-size: 12px;
+}
+
+.rv-toolbar-row {
+  display: flex;
+  justify-content: center;
+  padding: 10px 16px 0;
+}
+
+.rv-toolbar-row .don-toolbar {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.rv-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.rv-canvas {
+  background: #fff;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  border-radius: 4px;
+}
+
+.rv-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  color: var(--dp-muted);
+  font-size: 11.5px;
+}
+
+.rv-message {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--dp-muted);
+  font-size: 14px;
+}
