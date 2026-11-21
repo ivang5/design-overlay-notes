@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Download, HardDrive, Keyboard, ShieldCheck, Trash2, Upload } from 'lucide-react';
+import { ArrowLeft, Download, HardDrive, Keyboard, LocateFixed, ShieldCheck, Trash2, Upload } from 'lucide-react';
 import { getStorageUsage, type StorageUsage } from '../../database/repository';
+import { getSettings, updateSettings } from '../../database/settings';
+import { FIGMA_ORIGINS, hasFigmaAccess } from '../../shared/figma-access';
 import { backupFileName, createBackupArchive } from '../../export/backup-export';
 import { importBackupFile } from '../../export/backup-import';
 import { downloadBlob } from '../../export/png-export';
@@ -10,15 +12,38 @@ import { ConfirmAction, InlineMessage, formatBytes } from './common';
 
 type Message = { tone: 'info' | 'error' | 'ok'; text: string } | null;
 
+const DRAWING_KEYS: readonly (readonly [string, string])[] = [
+  ['V', 'Select'],
+  ['P', 'Pen'],
+  ['H', 'Highlighter'],
+  ['A', 'Arrow'],
+  ['R', 'Rectangle'],
+  ['O', 'Ellipse'],
+  ['T', 'Text'],
+  ['S', 'Sticky note'],
+  ['E', 'Eraser'],
+  ['Ctrl/⌘+Z', 'Undo'],
+  ['Ctrl/⌘+Shift+Z', 'Redo'],
+  ['Delete', 'Delete selected'],
+  ['Esc', 'Stop drawing'],
+];
+
 export function SettingsView({ onBack }: { onBack: () => void }) {
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [commands, setCommands] = useState<chrome.commands.Command[]>([]);
   const [message, setMessage] = useState<Message>(null);
   const [busy, setBusy] = useState(false);
+  const [followView, setFollowView] = useState<boolean | null>(null);
+  const [figmaAccess, setFigmaAccess] = useState<boolean | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(() => {
     void getStorageUsage().then(setUsage);
+  }, []);
+
+  useEffect(() => {
+    void getSettings().then((s) => setFollowView(s.followView));
+    void hasFigmaAccess().then(setFigmaAccess);
   }, []);
 
   useEffect(() => {
@@ -70,6 +95,52 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           </li>
           <li>Uninstalling the extension deletes its data. Export a backup first.</li>
         </ul>
+      </section>
+
+      <section className="dp-panel-section">
+        <h2>
+          <LocateFixed size={16} aria-hidden="true" /> Figma view
+        </h2>
+        <label className="dp-check">
+          <input
+            type="checkbox"
+            checked={followView ?? true}
+            disabled={followView === null}
+            onChange={(e) => {
+              const next = e.target.checked;
+              setFollowView(next);
+              void updateSettings({ followView: next });
+            }}
+          />
+          <span>
+            <strong>Keep notes attached to the design</strong> when you scroll or zoom Figma. The extension compares
+            temporary screenshots of the tab with the capture to find where your notes belong; they are processed in
+            memory and never stored.
+          </span>
+        </label>
+        <label className="dp-check">
+          <input
+            type="checkbox"
+            checked={figmaAccess ?? false}
+            disabled={figmaAccess === null}
+            onChange={(e) => {
+              const next = e.target.checked;
+              void run(async () => {
+                // Must run inside the click (user gesture) for Chrome to show its prompt.
+                const ok = next
+                  ? await chrome.permissions.request({ origins: FIGMA_ORIGINS })
+                  : await chrome.permissions.remove({ origins: FIGMA_ORIGINS });
+                setFigmaAccess(await hasFigmaAccess());
+                if (next && !ok) return 'Chrome did not grant access. You can keep clicking the icon on each Figma tab.';
+              });
+            }}
+          />
+          <span>
+            <strong>Work on Figma tabs without a click.</strong> Lets “Open in Figma” show notes automatically and
+            notes-manager actions reach Figma tabs where you have not clicked the extension icon. Chrome will ask to
+            allow access to www.figma.com.
+          </span>
+        </label>
       </section>
 
       <section className="dp-panel-section">
@@ -164,18 +235,23 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         <h2>
           <Keyboard size={16} aria-hidden="true" /> Keyboard shortcuts
         </h2>
-        <dl className="dp-facts">
+        <ul className="dp-shortcuts">
           {commands.map((command) => (
-            <div key={command.name} className="dp-fact-row">
-              <dt>{command.name === '_execute_action' ? 'Start annotating / toggle drawing' : command.description}</dt>
-              <dd>{command.shortcut || <span className="dp-muted">not set</span>}</dd>
-            </div>
+            <li key={command.name}>
+              <span>{command.name === '_execute_action' ? 'Start annotating / toggle drawing' : command.description}</span>
+              {command.shortcut ? <kbd>{command.shortcut}</kbd> : <span className="dp-muted">not set</span>}
+            </li>
           ))}
-        </dl>
-        <p className="dp-muted">
-          While drawing: V select, P pen, H highlighter, A arrow, R rectangle, O ellipse, T text, S sticky note, E eraser,
-          Ctrl/⌘+Z undo, Esc to stop drawing.
-        </p>
+        </ul>
+        <h3 className="dp-subheading">While drawing</h3>
+        <ul className="dp-keygrid">
+          {DRAWING_KEYS.map(([key, label]) => (
+            <li key={key}>
+              <kbd>{key}</kbd>
+              <span>{label}</span>
+            </li>
+          ))}
+        </ul>
         <button
           type="button"
           className="dp-btn"

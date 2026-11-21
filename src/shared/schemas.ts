@@ -16,11 +16,14 @@ export const colorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 
 export const annotationStyleSchema = z.object({
   color: colorSchema,
-  /** Stroke width in capture CSS pixels. */
-  width: z.number().min(0.5).max(128),
+  /**
+   * Stroke width in capture CSS pixels. Marks drawn while the view is zoomed
+   * in (view tracking) are stored proportionally thinner, hence the low minimum.
+   */
+  width: z.number().min(0.01).max(1_000),
   opacity: z.number().min(0.05).max(1),
   /** Font size in capture CSS pixels (text and sticky notes only). */
-  fontSize: z.number().min(6).max(200).optional(),
+  fontSize: z.number().min(0.1).max(2_000).optional(),
 });
 export type AnnotationStyle = z.infer<typeof annotationStyleSchema>;
 
@@ -73,7 +76,7 @@ export const ellipseAnnotationSchema = z.object({
 });
 
 /** Text boxes are anchored at their top-left corner and wrap at `width`. */
-const textGeometry = z.object({ x: coord, y: coord, width: z.number().min(20).max(10_000) });
+const textGeometry = z.object({ x: coord, y: coord, width: z.number().min(0.5).max(100_000) });
 
 export const textAnnotationSchema = z.object({
   ...annotationBase,
@@ -139,8 +142,30 @@ export const projectSchema = z.object({
 });
 export type Project = z.infer<typeof projectSchema>;
 
+/** Which viewport cells show the Figma canvas (see shared/region-grid.ts). */
+export const regionGridSchema = z.object({
+  cell: z.number().min(4).max(256),
+  cols: z.number().int().min(1).max(2_000),
+  rows: z.number().int().min(1).max(2_000),
+  bits: z.string().max(700_000),
+});
+
+/**
+ * Optional view-tracking data. Absent on captures made before view tracking
+ * existed; those can still be aligned, just less robustly.
+ */
+const viewTrackingFields = {
+  /** Figma's zoom level when captured (1 = 100%), read from Figma's zoom menu label. */
+  figmaZoom: z.number().positive().max(1_000).nullable().optional(),
+  /** Viewport cells that showed the Figma canvas when captured. */
+  regionGrid: regionGridSchema.nullable().optional(),
+  /** Name of the Figma page that was open (to return to it). */
+  figmaPage: z.string().max(500).nullable().optional(),
+};
+
 /** Viewport metadata measured by the content script right before a capture. */
 export const viewportMetadataSchema = z.object({
+  ...viewTrackingFields,
   pageUrl: z.string().max(4_000),
   pageTitle: z.string().max(1_000).nullable(),
   viewportCssWidth: z.number().positive().max(100_000),
@@ -174,6 +199,7 @@ export const captureSchema = z.object({
   visualViewportScale: z.number().nullable(),
   visualViewportOffsetLeft: z.number().nullable(),
   visualViewportOffsetTop: z.number().nullable(),
+  ...viewTrackingFields,
   /** Denormalized for fast listing/search; recomputed on every annotation save. */
   annotationCount: z.number().int().nonnegative(),
   searchText: z.string().max(200_000),
@@ -218,6 +244,10 @@ export const settingsSchema = z.object({
   tool: toolSchema,
   color: colorSchema,
   size: z.enum(['s', 'm', 'l']),
+  /** Font size for new text and sticky notes (CSS px at 100% view scale). */
+  fontSize: z.number().min(6).max(200),
+  /** Keep marks attached to the design when the Figma canvas is panned/zoomed. */
+  followView: z.boolean(),
   toolbarPosition: z.object({ x: z.number(), y: z.number() }).nullable(),
 });
 export type Settings = z.infer<typeof settingsSchema>;

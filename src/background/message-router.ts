@@ -17,8 +17,10 @@ import {
 } from '../shared/messages';
 import { getAnnotations, getCapture, getCaptureImages, replaceAnnotations } from '../database/repository';
 import { getActiveTab, newCaptureOnTab, NO_ACCESS_MESSAGE, showCaptureOnTab } from './activation';
+import { alignView } from './align-service';
+import { openInFigma } from './open-in-figma';
 import { captureTab } from './capture-service';
-import { setTabOverlay, tabsShowing } from './overlay-registry';
+import { lastView, setTabOverlay, tabsShowing } from './overlay-registry';
 import { getSettings, updateSettings } from '../database/settings';
 import { pingTab, sendToTabQuietly } from './tab-bridge';
 import { parseFigmaUrl, projectKeyFor } from '../shared/figma-url';
@@ -72,9 +74,11 @@ async function handleContentRequest(request: ContentRequest, sender: Sender): Pr
   const tabId = tab.id;
 
   switch (request.type) {
-    case 'OVERLAY_STATE':
-      await setTabOverlay(tabId, { captureId: request.captureId, mode: request.mode });
+    case 'OVERLAY_STATE': {
+      const parsed = parseFigmaUrl(sender.url);
+      await setTabOverlay(tabId, { captureId: request.captureId, mode: request.mode }, parsed ? projectKeyFor(parsed) : null);
       return null;
+    }
 
     case 'CAPTURE_CREATE': {
       if (sender.frameId !== 0) throw new Error('Captures can only be started from the top frame');
@@ -83,7 +87,8 @@ async function handleContentRequest(request: ContentRequest, sender: Sender): Pr
       if (!isSupportedPageUrl(pageUrl)) throw new Error('Captures are only supported on Figma design files');
       if (!tab.active) throw new Error('Switch to this tab before taking a capture');
       const capture = await captureTab(tab.windowId, pageUrl, request.metadata);
-      await setTabOverlay(tabId, { captureId: capture.id, mode: 'annotate' });
+      const parsedUrl = parseFigmaUrl(pageUrl);
+      await setTabOverlay(tabId, { captureId: capture.id, mode: 'annotate' }, parsedUrl ? projectKeyFor(parsedUrl) : null);
       broadcastToPages({ scope: 'captures', captureId: capture.id, projectId: capture.projectId });
       return { capture };
     }
@@ -91,7 +96,8 @@ async function handleContentRequest(request: ContentRequest, sender: Sender): Pr
     case 'CAPTURE_LOAD': {
       const capture = await getCapture(request.captureId);
       if (!capture) throw new Error('Capture not found');
-      return { capture, annotations: await getAnnotations(capture.id) };
+      const [annotations, view] = await Promise.all([getAnnotations(capture.id), lastView(tabId, capture.id)]);
+      return { capture, annotations, lastView: view };
     }
 
     case 'ANNOTATIONS_SAVE': {
@@ -108,8 +114,29 @@ async function handleContentRequest(request: ContentRequest, sender: Sender): Pr
       return { dataUrl: await blobToDataUrl(images.screenshot) };
     }
 
-    case 'SETTINGS_GET':
-      return { settings: await getSettings() };
+    case 'VIEW_ALIGN': {
+      if (sender.frameId !== 0) throw new Error('View alignment is only available in the top frame');
+      if (!isSupportedPageUrl(sender.url ?? '')) throw new Error('View alignment is only supported on Figma design files');
+      try {
+        return await alignView(tab, request);
+      } catch (error) {
+        // Most likely no screenshot permission for this tab (activeTab expired).
+        return { status: 'unavailable', reason: error instanceof Error ? error.message : String(error) };
+      }
+    }
+
+    case 'SETTINGS_GET': {
+      const commands = await chrome.commands.getAll().catch(() => [] as chrome.commands.Command[]);
+      const shortcut = (name: string) => commands.find((c) => c.name === name)?.shortcut ?? '';
+      return {
+        settings: await getSettings(),
+        shortcuts: {
+          activate: shortcut('_execute_action'),
+          newCapture: shortcut('new-capture'),
+          toggleVisibility: shortcut('toggle-visibility'),
+        },
+      };
+    }
 
     case 'SETTINGS_SET':
       return { settings: await updateSettings(request.patch) };
@@ -164,6 +191,9 @@ async function handlePageRequest(request: PageRequest): Promise<unknown> {
     case 'DATA_CHANGED':
       await forwardToTabs(request.change);
       return null;
+
+    case 'PANEL_OPEN_IN_FIGMA':
+      return openInFigma(request.windowId, request.captureId);
   }
 }
 

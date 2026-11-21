@@ -16,6 +16,8 @@ import {
   layoutTextAnnotation,
   round1,
   smoothPath,
+  strokeDecorationScale,
+  textDecorationScale,
   tint,
 } from './geometry';
 import type { TextMeasurer } from './text-layout';
@@ -80,7 +82,7 @@ export function describeAnnotation(annotation: Annotation, measure: TextMeasurer
               points: head,
               fill: style.color,
               stroke: style.color,
-              'stroke-width': Math.max(1, style.width / 2),
+              'stroke-width': Math.max(strokeDecorationScale(style.width), style.width / 2),
               'stroke-linejoin': 'round',
             },
           },
@@ -98,7 +100,7 @@ export function describeAnnotation(annotation: Annotation, measure: TextMeasurer
           y: g.y,
           width: g.width,
           height: g.height,
-          rx: Math.min(4, g.width / 4, g.height / 4),
+          rx: Math.min(4 * strokeDecorationScale(style.width), g.width / 4, g.height / 4),
           fill: 'none',
           stroke: style.color,
           'stroke-width': style.width,
@@ -136,7 +138,7 @@ export function describeAnnotation(annotation: Annotation, measure: TextMeasurer
           'font-weight': 600,
           // White halo keeps notes legible on top of busy designs.
           stroke: '#ffffff',
-          'stroke-width': Math.max(2, layout.fontSize / 6),
+          'stroke-width': Math.max(2 * Math.min(1, layout.fontSize / 12), layout.fontSize / 6),
           'stroke-linejoin': 'round',
           'paint-order': 'stroke',
         })],
@@ -146,6 +148,7 @@ export function describeAnnotation(annotation: Annotation, measure: TextMeasurer
     case 'sticky-note': {
       const layout = layoutTextAnnotation(annotation, measure);
       const { box, padding } = layout;
+      const k = textDecorationScale(layout.fontSize);
       return {
         tag: 'g',
         attrs: { ...common, opacity: style.opacity },
@@ -154,11 +157,11 @@ export function describeAnnotation(annotation: Annotation, measure: TextMeasurer
           {
             tag: 'rect',
             attrs: {
-              x: box.x + 2,
-              y: box.y + 3,
+              x: round1(box.x + 2 * k),
+              y: round1(box.y + 3 * k),
               width: box.width,
               height: box.height,
-              rx: 4,
+              rx: 4 * k,
               fill: '#000000',
               opacity: 0.12,
             },
@@ -170,10 +173,10 @@ export function describeAnnotation(annotation: Annotation, measure: TextMeasurer
               y: box.y,
               width: box.width,
               height: box.height,
-              rx: 4,
+              rx: 4 * k,
               fill: tint(style.color, 0.78),
               stroke: style.color,
-              'stroke-width': 1.5,
+              'stroke-width': 1.5 * k,
             },
           },
           textNode(layout.lines, box.x + padding, box.y + padding, layout.fontSize, layout.lineHeight, {

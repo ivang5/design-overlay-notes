@@ -1,5 +1,5 @@
-import { useId, useState, type ReactNode } from 'react';
-import { X } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { MoreHorizontal, X, type LucideIcon } from 'lucide-react';
 import { LABEL_SUGGESTIONS } from '../../shared/schemas';
 
 export function IconButton({
@@ -44,21 +44,165 @@ export function ConfirmAction({
   const [asking, setAsking] = useState(false);
   if (!asking) return <>{children(() => setAsking(true))}</>;
   return (
-    <span className="dp-confirm" role="alertdialog" aria-label={prompt}>
-      <span>{prompt}</span>
+    <ConfirmPrompt
+      prompt={prompt}
+      confirmLabel={confirmLabel}
+      onConfirm={() => {
+        setAsking(false);
+        onConfirm();
+      }}
+      onCancel={() => setAsking(false)}
+    />
+  );
+}
+
+/** Inline confirmation: a full row in wrapping flex containers, buttons side by side below the prompt. */
+export function ConfirmPrompt({
+  prompt,
+  confirmLabel = 'Delete',
+  onConfirm,
+  onCancel,
+}: {
+  prompt: string;
+  confirmLabel?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => confirmRef.current?.focus(), []);
+  return (
+    <div
+      className="dp-confirm"
+      role="alertdialog"
+      aria-label={prompt}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') onCancel();
+      }}
+    >
+      <p className="dp-confirm-prompt">{prompt}</p>
+      <div className="dp-confirm-actions">
+        <button ref={confirmRef} type="button" className="dp-btn is-danger is-small" onClick={onConfirm}>
+          {confirmLabel}
+        </button>
+        <button type="button" className="dp-btn is-small" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export interface MenuItem {
+  label: string;
+  icon: LucideIcon;
+  onSelect: () => void;
+  disabled?: boolean;
+  tone?: 'danger';
+}
+
+/**
+ * "⋯" button with a dropdown of secondary actions. Keyboard: Enter/Space or
+ * ↓ opens, ↑/↓ move, Enter selects, Esc closes and returns focus.
+ */
+export function ActionMenu({ label, items }: { label: string; items: MenuItem[] }) {
+  const [open, setOpen] = useState(false);
+  const [upward, setUpward] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+
+  const close = (refocus: boolean) => {
+    setOpen(false);
+    if (refocus) buttonRef.current?.focus();
+  };
+
+  useLayoutEffect(() => {
+    if (!open || !menuRef.current) return;
+    // Open upwards when there is no room below (bottom of the panel).
+    const rect = menuRef.current.getBoundingClientRect();
+    setUpward(rect.bottom > window.innerHeight - 8 && rect.top - rect.height > 40);
+    menuRef.current.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (!menuRef.current?.contains(target) && !buttonRef.current?.contains(target)) close(false);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [open]);
+
+  const moveFocus = (delta: number) => {
+    const buttons = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])];
+    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    buttons[(index + delta + buttons.length) % buttons.length]?.focus();
+  };
+
+  return (
+    <span className="dp-menu-anchor">
       <button
+        ref={buttonRef}
         type="button"
-        className="dp-btn is-danger is-small"
+        className={`dp-icon-btn ${open ? 'is-active' : ''}`}
+        aria-label={label}
+        title={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
         onClick={() => {
-          setAsking(false);
-          onConfirm();
+          setUpward(false);
+          setOpen((v) => !v);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown' && !open) {
+            e.preventDefault();
+            setOpen(true);
+          }
         }}
       >
-        {confirmLabel}
+        <MoreHorizontal size={16} aria-hidden="true" />
       </button>
-      <button type="button" className="dp-btn is-small" onClick={() => setAsking(false)}>
-        Cancel
-      </button>
+      {open ? (
+        <div
+          ref={menuRef}
+          id={menuId}
+          role="menu"
+          className={`dp-menu ${upward ? 'is-up' : ''}`}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              close(true);
+            } else if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              moveFocus(1);
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              moveFocus(-1);
+            } else if (e.key === 'Tab') {
+              close(false);
+            }
+          }}
+        >
+          {items.map(({ label: itemLabel, icon: Icon, onSelect, disabled, tone }) => (
+            <button
+              key={itemLabel}
+              type="button"
+              role="menuitem"
+              className={`dp-menu-item ${tone === 'danger' ? 'is-danger' : ''}`}
+              disabled={disabled}
+              onClick={() => {
+                close(true);
+                onSelect();
+              }}
+            >
+              <Icon size={15} aria-hidden="true" />
+              <span>{itemLabel}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
     </span>
   );
 }

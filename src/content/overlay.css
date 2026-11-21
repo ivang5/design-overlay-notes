@@ -13,6 +13,9 @@
   inset: 0;
   width: 100%;
   height: 100%;
+  /* Own compositor layer: live view changes move it without repainting the marks. */
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 /* Obvious indicator that drawing mode is intercepting input. */
@@ -54,4 +57,10 @@
 /* The colour popover must escape the scrolling toolbar. */
 .don-toolbar:has(.don-popover) {
   overflow: visible;
+}
+
+/* Hit-test probing (Figma canvas region): our overlay must be transparent to elementFromPoint. */
+.don-probing,
+.don-probing * {
+  pointer-events: none !important;
 }

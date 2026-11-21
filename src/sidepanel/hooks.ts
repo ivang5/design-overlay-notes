@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getCaptureImages, listCaptures, listProjects } from '../database/repository';
-import { dataChangeSchema, sendToBackground, type ActiveTabInfo, type DataChange } from '../shared/messages';
+import {
+  dataChangeSchema,
+  onLocalDataChange,
+  sendToBackground,
+  type ActiveTabInfo,
+  type DataChange,
+} from '../shared/messages';
 import type { Capture, Project } from '../shared/schemas';
 
-/** Subscribe to DATA_CHANGED broadcasts from other extension contexts. */
+/** Subscribe to data changes made in this page and in other extension contexts. */
 export function useDataChanges(onChange: (change: DataChange) => void): void {
   const ref = useRef(onChange);
   ref.current = onChange;
@@ -18,7 +24,11 @@ export function useDataChanges(onChange: (change: DataChange) => void): void {
       return false; // never respond: the service worker owns responses
     };
     chrome.runtime.onMessage.addListener(listener);
-    return () => chrome.runtime.onMessage.removeListener(listener);
+    const offLocal = onLocalDataChange((change) => ref.current(change));
+    return () => {
+      chrome.runtime.onMessage.removeListener(listener);
+      offLocal();
+    };
   }, []);
 }
 

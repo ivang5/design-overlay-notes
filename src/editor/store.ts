@@ -7,7 +7,7 @@
  */
 import {
   DEFAULT_COLOR,
-  FONT_SIZES,
+  DEFAULT_FONT_SIZE,
   HIGHLIGHTER_OPACITY,
   HIGHLIGHTER_WIDTHS,
   MAX_ANNOTATIONS_PER_CAPTURE,
@@ -31,7 +31,16 @@ export interface EditorState {
   editing: TextEditing | null;
   tool: Tool;
   color: string;
+  /** Stroke size preset for pen, highlighter, arrow and shapes. */
   size: SizePreset;
+  /** Font size for text and sticky notes, in screen CSS px. */
+  fontSize: number;
+  /**
+   * Screen pixels per capture pixel of the current view (1 unless the live
+   * overlay follows a zoomed Figma canvas). New marks are created at
+   * size / viewScale so they look the chosen size on screen.
+   */
+  viewScale: number;
   canUndo: boolean;
   canRedo: boolean;
   /** Increments on every committed (persist-worthy) change. */
@@ -48,7 +57,7 @@ export class EditorStore {
   private listeners = new Set<Listener>();
   private commitListeners = new Set<CommitListener>();
 
-  constructor(initial?: Partial<Pick<EditorState, 'tool' | 'color' | 'size'>>) {
+  constructor(initial?: Partial<Pick<EditorState, 'tool' | 'color' | 'size' | 'fontSize'>>) {
     this.state = {
       captureId: null,
       annotations: [],
@@ -57,6 +66,8 @@ export class EditorStore {
       tool: initial?.tool ?? 'pen',
       color: initial?.color ?? DEFAULT_COLOR,
       size: initial?.size ?? 'm',
+      fontSize: initial?.fontSize ?? DEFAULT_FONT_SIZE,
+      viewScale: 1,
       canUndo: false,
       canRedo: false,
       revision: 0,
@@ -122,21 +133,55 @@ export class EditorStore {
     }
   }
 
+  /** Stroke size preset. Also resizes the selected stroke/shape. */
   setSize(size: SizePreset): void {
     this.set({ size });
+    const selected = this.getSelected();
+    if (selected && !isTextLike(selected)) {
+      const width = round2(strokeWidthFor(selected.type === 'highlighter' ? 'highlighter' : 'pen', size) / this.state.viewScale);
+      if (selected.style.width !== width) {
+        this.updateAnnotation({ ...selected, style: { ...selected.style, width } } as Annotation);
+      }
+    }
   }
 
-  /** Style for a new annotation created with the given tool. */
+  /** Font size (screen px). Also applies to the text note being edited or selected. */
+  setFontSize(fontSize: number): void {
+    this.set({ fontSize });
+    const scaled = round2(fontSize / this.state.viewScale);
+    const editing = this.state.editing;
+    if (editing) {
+      const draft = editing.draft;
+      this.set({ editing: { ...editing, draft: { ...draft, style: { ...draft.style, fontSize: scaled } } } });
+      if (!editing.isNew) {
+        const existing = this.state.annotations.find((a) => a.id === draft.id);
+        if (existing && isTextLike(existing) && existing.style.fontSize !== scaled) {
+          this.updateAnnotation({ ...existing, style: { ...existing.style, fontSize: scaled } });
+        }
+      }
+      return;
+    }
+    const selected = this.getSelected();
+    if (selected && isTextLike(selected) && selected.style.fontSize !== scaled) {
+      this.updateAnnotation({ ...selected, style: { ...selected.style, fontSize: scaled } });
+    }
+  }
+
+  setViewScale(viewScale: number): void {
+    if (Number.isFinite(viewScale) && viewScale > 0 && viewScale !== this.state.viewScale) this.set({ viewScale });
+  }
+
+  /** Style for a new annotation created with the given tool (in capture pixels). */
   styleFor(tool: Tool): AnnotationStyle {
-    const { color, size } = this.state;
+    const { color, size, fontSize, viewScale } = this.state;
     switch (tool) {
       case 'highlighter':
-        return { color, width: HIGHLIGHTER_WIDTHS[size], opacity: HIGHLIGHTER_OPACITY };
+        return { color, width: round2(HIGHLIGHTER_WIDTHS[size] / viewScale), opacity: HIGHLIGHTER_OPACITY };
       case 'text':
       case 'sticky-note':
-        return { color, width: 1, opacity: 1, fontSize: FONT_SIZES[size] };
+        return { color, width: 1, opacity: 1, fontSize: round2(fontSize / viewScale) };
       default:
-        return { color, width: STROKE_WIDTHS[size], opacity: 1 };
+        return { color, width: round2(STROKE_WIDTHS[size] / viewScale), opacity: 1 };
     }
   }
 
@@ -240,7 +285,10 @@ export class EditorStore {
     if (!existing) return;
     if (!text.trim()) {
       this.removeAnnotations([existing.id]);
-    } else if (existing.type === editing.draft.type && existing.text !== text) {
+    } else if (
+      existing.type === editing.draft.type &&
+      (existing.text !== text || !sameStyle(existing.style, editing.draft.style))
+    ) {
       this.updateAnnotation({ ...editing.draft, text });
     }
   }
@@ -248,4 +296,20 @@ export class EditorStore {
   cancelTextEdit(): void {
     if (this.state.editing) this.set({ editing: null });
   }
+}
+
+function isTextLike(annotation: Annotation): annotation is TextLikeAnnotation {
+  return annotation.type === 'text' || annotation.type === 'sticky-note';
+}
+
+function strokeWidthFor(tool: 'pen' | 'highlighter', size: SizePreset): number {
+  return tool === 'highlighter' ? HIGHLIGHTER_WIDTHS[size] : STROKE_WIDTHS[size];
+}
+
+function sameStyle(a: AnnotationStyle, b: AnnotationStyle): boolean {
+  return a.color === b.color && a.width === b.width && a.opacity === b.opacity && a.fontSize === b.fontSize;
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
 }

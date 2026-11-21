@@ -4,7 +4,7 @@ import { errorMessage } from '../../shared/messages';
 import type { Capture, Project } from '../../shared/schemas';
 import { removeProject, saveProjectName } from '../actions';
 import { CaptureCard } from './CaptureCard';
-import { ConfirmAction, IconButton, InlineMessage } from './common';
+import { ActionMenu, ConfirmPrompt, InlineMessage } from './common';
 
 interface Props {
   project: Project;
@@ -27,6 +27,7 @@ export function ProjectSection({
 }: Props) {
   const [open, setOpen] = useState(true);
   const [renaming, setRenaming] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [name, setName] = useState(project.name);
   const [error, setError] = useState<string | null>(null);
 
@@ -77,19 +78,23 @@ export function ProjectSection({
         )}
         {isCurrent ? <span className="dp-pill">This tab</span> : null}
         <span className="dp-count">{totalCaptures}</span>
-        <IconButton label="Rename project" onClick={() => setRenaming(true)}>
-          <Pencil size={14} aria-hidden="true" />
-        </IconButton>
-        <ConfirmAction
-          prompt={`Delete project and its ${totalCaptures} captures?`}
-          onConfirm={() => removeProject(project.id).catch((e: unknown) => setError(errorMessage(e)))}
-        >
-          {(ask) => (
-            <IconButton label="Delete project" tone="danger" onClick={ask}>
-              <Trash2 size={14} aria-hidden="true" />
-            </IconButton>
-          )}
-        </ConfirmAction>
+        <ActionMenu
+          label="Project actions"
+          items={[
+            { label: 'Rename project', icon: Pencil, onSelect: () => setRenaming(true) },
+            { label: 'Delete project…', icon: Trash2, tone: 'danger', onSelect: () => setConfirmDelete(true) },
+          ]}
+        />
+        {confirmDelete ? (
+          <ConfirmPrompt
+            prompt={`Delete “${project.name}” and its ${totalCaptures} ${totalCaptures === 1 ? 'capture' : 'captures'}?`}
+            onCancel={() => setConfirmDelete(false)}
+            onConfirm={() => {
+              setConfirmDelete(false);
+              removeProject(project.id).catch((e: unknown) => setError(errorMessage(e)));
+            }}
+          />
+        ) : null}
       </header>
       {error ? (
         <InlineMessage tone="error" onDismiss={() => setError(null)}>

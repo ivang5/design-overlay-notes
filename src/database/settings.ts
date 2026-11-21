@@ -3,7 +3,7 @@
  * Access is restricted to trusted extension contexts; content scripts go
  * through the service worker.
  */
-import { DEFAULT_COLOR } from '../shared/constants';
+import { DEFAULT_COLOR, DEFAULT_FONT_SIZE } from '../shared/constants';
 import { settingsSchema, type Settings, type SettingsPatch } from '../shared/schemas';
 
 const KEY = 'settings';
@@ -12,6 +12,8 @@ export const DEFAULT_SETTINGS: Settings = {
   tool: 'pen',
   color: DEFAULT_COLOR,
   size: 'm',
+  fontSize: DEFAULT_FONT_SIZE,
+  followView: true,
   toolbarPosition: null,
 };
 

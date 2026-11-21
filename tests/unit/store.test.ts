@@ -12,6 +12,48 @@ function loaded(annotations: Annotation[] = []) {
   return store;
 }
 
+describe('EditorStore styles', () => {
+  it('uses the font size for new text and applies it to the selected note', () => {
+    const store = loaded([text('t1')]);
+    store.setFontSize(32);
+    expect(store.styleFor('text').fontSize).toBe(32);
+    store.select('t1');
+    store.setFontSize(24);
+    const note = store.getState().annotations[0]!;
+    expect(note.style.fontSize).toBe(24);
+    expect(store.getState().canUndo).toBe(true);
+  });
+
+  it('applies the font size to the note being edited and keeps it on finish', () => {
+    const store = loaded([text('t1', 'Hello')]);
+    store.beginTextEdit(store.getState().annotations[0] as TextLikeAnnotation, false);
+    store.setFontSize(40);
+    expect(store.getState().editing?.draft.style.fontSize).toBe(40);
+    store.finishTextEdit();
+    expect(store.getState().annotations[0]!.style.fontSize).toBe(40);
+  });
+
+  it('resizes the selected stroke or shape with the S/M/L preset, but not text', () => {
+    const store = loaded([rectangle('r1'), text('t1')]);
+    store.select('r1');
+    store.setSize('l');
+    expect(store.getState().annotations[0]!.style.width).toBe(8);
+    store.select('t1');
+    store.setSize('s');
+    expect(store.getState().annotations[1]!.style.width).toBe(4); // unchanged fixture width
+  });
+
+  it('creates marks at size / viewScale while the view is zoomed', () => {
+    const store = loaded();
+    store.setViewScale(2);
+    store.setSize('m'); // 4 px on screen
+    store.setFontSize(18);
+    expect(store.styleFor('pen').width).toBe(2);
+    expect(store.styleFor('highlighter').width).toBe(10);
+    expect(store.styleFor('text').fontSize).toBe(9);
+  });
+});
+
 describe('EditorStore history', () => {
   it('undoes and redoes additions', () => {
     const store = loaded();

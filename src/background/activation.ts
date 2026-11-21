@@ -7,6 +7,9 @@ import { compareViewport } from '../shared/coordinates';
 import { isSupportedPageUrl, parseFigmaUrl, projectKeyFor } from '../shared/figma-url';
 import { errorMessage, type ShowOnPageResult } from '../shared/messages';
 import { getCapture } from '../database/repository';
+import { getSettings } from '../database/settings';
+import { prewarmReference } from './align-service';
+import { takePendingShow } from './open-in-figma';
 import { ensureOverlay, pingTab, sendToTab } from './tab-bridge';
 
 export const NO_ACCESS_MESSAGE =
@@ -18,6 +21,12 @@ export async function activateOnTab(tab: chrome.tabs.Tab): Promise<void> {
   if (tab.id === undefined) return;
   if (!isSupportedPageUrl(tab.url)) throw new Error('This tab is not a Figma design file.');
   const status = await ensureOverlay(tab.id);
+  // "Open in Figma" from the notes manager is waiting for this click.
+  const pending = await takePendingShow(tab.id);
+  if (pending) {
+    await sendToTab(tab.id, { type: 'SHOW_CAPTURE', captureId: pending, goToView: true });
+    return;
+  }
   if (!status.captureId || status.mode === 'closed') {
     await sendToTab(tab.id, { type: 'CAPTURE_START' });
   } else {
@@ -61,10 +70,15 @@ export async function showCaptureOnTab(
   if (!captured || projectKeyFor(captured) !== projectKeyFor(live)) {
     throw new Error('This capture belongs to a different Figma file. Open that file in this tab first.');
   }
+  void prewarmReference(captureId).catch(() => undefined);
   await ensureOverlay(tab.id);
-  const viewport = await sendToTab(tab.id, { type: 'GET_VIEWPORT' });
-  const comparison = compareViewport(capture, viewport);
-  if (comparison.status === 'mismatch' && !force) return comparison;
+  // When marks follow the view, the overlay finds the captured area itself;
+  // a different window size or zoom is not a problem.
+  if (!force && !(await getSettings()).followView) {
+    const viewport = await sendToTab(tab.id, { type: 'GET_VIEWPORT' });
+    const comparison = compareViewport(capture, viewport);
+    if (comparison.status === 'mismatch') return comparison;
+  }
   await sendToTab(tab.id, { type: 'SHOW_CAPTURE', captureId });
   return { status: 'shown' };
 }

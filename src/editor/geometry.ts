@@ -81,10 +81,28 @@ export function smoothPath(points: readonly number[]): string {
   return d;
 }
 
+/**
+ * Fixed decoration sizes (arrow head minimum, corner radius, sticky padding…)
+ * were designed for marks drawn at 100% view scale. Marks drawn on a zoomed-in
+ * view are stored with smaller widths/font sizes; these factors shrink the
+ * decorations with them while leaving marks of normal size unchanged.
+ */
+export function strokeDecorationScale(strokeWidth: number): number {
+  return Math.min(1, strokeWidth / 2);
+}
+
+export function textDecorationScale(fontSize: number): number {
+  return Math.min(1, fontSize / 14);
+}
+
+export function arrowHeadLength(strokeWidth: number): number {
+  return Math.max(10 * strokeDecorationScale(strokeWidth), strokeWidth * 4);
+}
+
 /** Arrow head triangle for an arrow from (x1,y1) to (x2,y2). */
 export function arrowHeadPoints(x1: number, y1: number, x2: number, y2: number, strokeWidth: number): Point[] {
   const angle = Math.atan2(y2 - y1, x2 - x1);
-  const length = Math.max(10, strokeWidth * 4);
+  const length = arrowHeadLength(strokeWidth);
   const spread = Math.PI / 7;
   return [
     { x: x2, y: y2 },
@@ -97,7 +115,7 @@ export function arrowHeadPoints(x1: number, y1: number, x2: number, y2: number, 
 export function arrowShaftEnd(x1: number, y1: number, x2: number, y2: number, strokeWidth: number): Point {
   const len = Math.hypot(x2 - x1, y2 - y1);
   if (len === 0) return { x: x2, y: y2 };
-  const pull = Math.min(len, Math.max(10, strokeWidth * 4) * 0.6);
+  const pull = Math.min(len, arrowHeadLength(strokeWidth) * 0.6);
   return { x: x2 - ((x2 - x1) / len) * pull, y: y2 - ((y2 - y1) / len) * pull };
 }
 
@@ -115,12 +133,13 @@ export function fontSizeOf(annotation: TextLikeAnnotation): number {
 export function layoutTextAnnotation(annotation: TextLikeAnnotation, measure: TextMeasurer): TextBoxLayout {
   const fontSize = fontSizeOf(annotation);
   const isSticky = annotation.type === 'sticky-note';
-  const padding = isSticky ? STICKY_PADDING : 0;
-  const innerWidth = Math.max(10, annotation.geometry.width - padding * 2);
+  const k = textDecorationScale(fontSize);
+  const padding = isSticky ? STICKY_PADDING * k : 0;
+  const innerWidth = Math.max(1, annotation.geometry.width - padding * 2);
   const block = layoutTextBlock(annotation.text, fontSize, innerWidth, measure, isSticky ? 500 : 600);
   const { x, y, width } = annotation.geometry;
   const box: Rect = isSticky
-    ? { x, y, width, height: Math.max(STICKY_MIN_HEIGHT, block.contentHeight + padding * 2) }
+    ? { x, y, width, height: Math.max(STICKY_MIN_HEIGHT * k, block.contentHeight + padding * 2) }
     : // Plain text hugs its content so it does not create a huge invisible hit area.
       { x, y, width: Math.max(fontSize, block.contentWidth), height: Math.max(block.lineHeight, block.contentHeight) };
   return { ...block, box, padding, fontSize };
@@ -146,7 +165,7 @@ export function annotationBounds(annotation: Annotation, measure: TextMeasurer):
     }
     case 'arrow': {
       const { x1, y1, x2, y2 } = annotation.geometry;
-      const pad = Math.max(10, annotation.style.width * 4);
+      const pad = arrowHeadLength(annotation.style.width);
       const r = normalizeRect(x1, y1, x2, y2);
       return { x: r.x - pad / 2, y: r.y - pad / 2, width: r.width + pad, height: r.height + pad };
     }
@@ -249,7 +268,10 @@ export function translateAnnotation<A extends Annotation>(annotation: A, dx: num
   }
 }
 
-export type ResizeHandle = 'start' | 'end' | 'se';
+export type CornerHandle = 'nw' | 'ne' | 'sw' | 'se';
+export type ResizeHandle = 'start' | 'end' | CornerHandle;
+
+const CORNERS: CornerHandle[] = ['nw', 'ne', 'sw', 'se'];
 
 /** Handles offered for the selected annotation. */
 export function resizeHandlesFor(annotation: Annotation): ResizeHandle[] {
@@ -258,62 +280,139 @@ export function resizeHandlesFor(annotation: Annotation): ResizeHandle[] {
       return ['start', 'end'];
     case 'rectangle':
     case 'ellipse':
+    case 'stroke':
+    case 'highlighter':
+      return CORNERS;
     case 'text':
     case 'sticky-note':
       return ['se'];
-    default:
-      return [];
   }
 }
 
-export function handlePosition(annotation: Annotation, handle: ResizeHandle, measure: TextMeasurer): Point {
+/** Raw geometric box (without stroke padding) of a box-like or freehand annotation. */
+function geometryBox(annotation: Annotation): { x0: number; y0: number; x1: number; y1: number } | null {
+  switch (annotation.type) {
+    case 'rectangle':
+    case 'ellipse': {
+      const g = annotation.geometry;
+      return { x0: g.x, y0: g.y, x1: g.x + g.width, y1: g.y + g.height };
+    }
+    case 'stroke':
+    case 'highlighter': {
+      const pts = annotation.geometry.points;
+      let x0 = Infinity;
+      let y0 = Infinity;
+      let x1 = -Infinity;
+      let y1 = -Infinity;
+      for (let i = 0; i + 1 < pts.length; i += 2) {
+        x0 = Math.min(x0, pts[i]!);
+        x1 = Math.max(x1, pts[i]!);
+        y0 = Math.min(y0, pts[i + 1]!);
+        y1 = Math.max(y1, pts[i + 1]!);
+      }
+      return { x0, y0, x1, y1 };
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Where a handle is drawn and hit-tested. Corner handles sit on the corners of
+ * the selection outline (annotation bounds grown by `pad`).
+ */
+export function handlePosition(annotation: Annotation, handle: ResizeHandle, measure: TextMeasurer, pad = 0): Point {
   if (annotation.type === 'arrow') {
     const g = annotation.geometry;
     return handle === 'start' ? { x: g.x1, y: g.y1 } : { x: g.x2, y: g.y2 };
-  }
-  if (annotation.type === 'rectangle' || annotation.type === 'ellipse') {
-    const g = annotation.geometry;
-    return { x: g.x + g.width, y: g.y + g.height };
   }
   if (annotation.type === 'text' || annotation.type === 'sticky-note') {
     const box = layoutTextAnnotation(annotation, measure).box;
     // Text boxes resize their wrap width; the handle sits on the wrap edge.
     return { x: annotation.geometry.x + annotation.geometry.width, y: box.y + box.height };
   }
-  return { x: 0, y: 0 };
+  const b = annotationBounds(annotation, measure);
+  const west = handle === 'nw' || handle === 'sw';
+  const north = handle === 'nw' || handle === 'ne';
+  return {
+    x: west ? b.x - pad : b.x + b.width + pad,
+    y: north ? b.y - pad : b.y + b.height + pad,
+  };
+}
+
+export interface ResizeOptions {
+  /** Keep the width/height ratio (Shift). */
+  keepAspect?: boolean;
+  /** Smallest box edge, in annotation units, a corner drag may produce. */
+  minSize?: number;
+}
+
+/** Signed scale factor for one axis, never collapsing a non-empty extent below `min`. */
+function axisScale(extent: number, newExtent: number, min: number): number {
+  if (extent === 0) return 1;
+  let scale = newExtent / extent;
+  if (Math.abs(scale * extent) < min) scale = (Math.sign(scale) || 1) * (min / Math.abs(extent));
+  return scale;
 }
 
 /**
  * Apply a handle drag. `origin` is the annotation as it was when the drag
- * started, `p` the current pointer position.
+ * started and (dx, dy) how far the pointer has moved since then. The handle
+ * follows the pointer; for corner handles the opposite corner stays fixed.
  */
-export function resizeAnnotation<A extends Annotation>(origin: A, handle: ResizeHandle, p: Point): A {
-  switch (origin.type) {
-    case 'arrow': {
-      const g = origin.geometry;
-      const geometry =
-        handle === 'start'
-          ? { ...g, x1: round1(p.x), y1: round1(p.y) }
-          : { ...g, x2: round1(p.x), y2: round1(p.y) };
-      return { ...origin, geometry };
-    }
-    case 'rectangle':
-    case 'ellipse': {
-      const g = origin.geometry;
-      const r = normalizeRect(g.x, g.y, p.x, p.y);
-      return {
-        ...origin,
-        geometry: { x: round1(r.x), y: round1(r.y), width: round1(r.width), height: round1(r.height) },
-      };
-    }
-    case 'text':
-    case 'sticky-note': {
-      const g = origin.geometry;
-      return { ...origin, geometry: { ...g, width: round1(Math.max(40, p.x - g.x)) } };
-    }
-    default:
-      return origin;
+export function resizeAnnotation<A extends Annotation>(
+  origin: A,
+  handle: ResizeHandle,
+  dx: number,
+  dy: number,
+  options: ResizeOptions = {},
+): A {
+  if (origin.type === 'arrow') {
+    const g = origin.geometry;
+    const geometry =
+      handle === 'start'
+        ? { ...g, x1: round1(g.x1 + dx), y1: round1(g.y1 + dy) }
+        : { ...g, x2: round1(g.x2 + dx), y2: round1(g.y2 + dy) };
+    return { ...origin, geometry };
   }
+  if (origin.type === 'text' || origin.type === 'sticky-note') {
+    const g = origin.geometry;
+    const min = Math.max(options.minSize ?? 40, 0.5);
+    return { ...origin, geometry: { ...g, width: round1(Math.max(min, g.width + dx)) } };
+  }
+
+  const box = geometryBox(origin);
+  if (!box || handle === 'start' || handle === 'end') return origin;
+  const west = handle === 'nw' || handle === 'sw';
+  const north = handle === 'nw' || handle === 'ne';
+  // Fixed (opposite) corner and the dragged corner's new position.
+  const fx = west ? box.x1 : box.x0;
+  const fy = north ? box.y1 : box.y0;
+  const mx = (west ? box.x0 : box.x1) + dx;
+  const my = (north ? box.y0 : box.y1) + dy;
+  const width = (west ? box.x0 : box.x1) - fx;
+  const height = (north ? box.y0 : box.y1) - fy;
+  const min = options.minSize ?? 2;
+  let sx = axisScale(width, mx - fx, min);
+  let sy = axisScale(height, my - fy, min);
+  if (options.keepAspect && width !== 0 && height !== 0) {
+    const magnitude = Math.max(Math.abs(sx), Math.abs(sy));
+    sx = Math.sign(sx) * magnitude;
+    sy = Math.sign(sy) * magnitude;
+  }
+
+  if (origin.type === 'stroke' || origin.type === 'highlighter') {
+    const points = origin.geometry.points.map((v, i) => round1(i % 2 === 0 ? fx + (v - fx) * sx : fy + (v - fy) * sy));
+    return { ...origin, geometry: { points } };
+  }
+  if (origin.type === 'rectangle' || origin.type === 'ellipse') {
+    const r = normalizeRect(fx, fy, fx + width * sx, fy + height * sy);
+    return {
+      ...origin,
+      geometry: { x: round1(r.x), y: round1(r.y), width: round1(r.width), height: round1(r.height) },
+    };
+  }
+  return origin;
 }
 
 /** Lighten a #rrggbb color towards white (used for sticky note fills). */

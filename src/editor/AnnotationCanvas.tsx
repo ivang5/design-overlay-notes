@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -52,17 +53,32 @@ type Gesture =
   | { kind: 'freehand'; pointerId: number; draft: FreehandAnnotation; points: number[] }
   | { kind: 'shape'; pointerId: number; draft: ShapeDraft; start: Point }
   | { kind: 'move'; pointerId: number; origin: Annotation; start: Point; current: Annotation | null }
-  | { kind: 'resize'; pointerId: number; origin: Annotation; handle: ResizeHandle; current: Annotation | null }
+  | {
+      kind: 'resize';
+      pointerId: number;
+      origin: Annotation;
+      handle: ResizeHandle;
+      start: Point;
+      current: Annotation | null;
+    }
   | { kind: 'erase'; pointerId: number; erased: Set<string> };
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
 const ERASER_BUTTON = 5; // pen eraser end
+/** Gap between a selected mark and its dashed outline, in screen px. */
+const SELECTION_PAD = 4;
+/** Pointer reach of a resize handle, in screen px. */
+const HANDLE_REACH = 8;
 
 export interface AnnotationCanvasProps {
   store: EditorStore;
   /** Coordinate space in capture CSS pixels. */
   viewBoxWidth: number;
   viewBoxHeight: number;
+  /** Full viewBox override (e.g. a panned/zoomed view of the capture). */
+  viewBox?: string;
+  /** Receives the <svg> element (e.g. to apply a compositor transform). */
+  svgElementRef?: (element: SVGSVGElement | null) => void;
   /** Screen pixels per capture CSS pixel (1 on the live page). Used to size handles. */
   uiScale?: number;
   interactive: boolean;
@@ -76,6 +92,8 @@ export function AnnotationCanvas({
   store,
   viewBoxWidth,
   viewBoxHeight,
+  viewBox,
+  svgElementRef,
   uiScale = 1,
   interactive,
   className,
@@ -84,12 +102,20 @@ export function AnnotationCanvas({
 }: AnnotationCanvasProps) {
   const state = useSyncExternalStore(store.subscribe, store.getState);
   const svgRef = useRef<SVGSVGElement>(null);
+  const setSvg = useCallback(
+    (element: SVGSVGElement | null) => {
+      svgRef.current = element;
+      svgElementRef?.(element);
+    },
+    [svgElementRef],
+  );
   const draftRef = useRef<SVGGElement>(null);
   const measure = useMemo(() => getTextMeasurer(), []);
   const draftRenderer = useMemo(() => new DraftRenderer(measure), [measure]);
   const gestureRef = useRef<Gesture | null>(null);
   const [hidden, setHidden] = useState<ReadonlySet<string>>(EMPTY_SET);
   const [gestureActive, setGestureActive] = useState(false);
+  const [hoverHandle, setHoverHandle] = useState<ResizeHandle | null>(null);
 
   useEffect(() => {
     draftRenderer.attach(draftRef.current);
@@ -147,11 +173,12 @@ export function AnnotationCanvas({
         break;
       }
       case 'shape': {
+        // Ignore accidental clicks (thresholds in screen px).
         const d = gesture.draft;
         if (d.type === 'arrow') {
           const g = d.geometry;
-          if (Math.hypot(g.x2 - g.x1, g.y2 - g.y1) >= 5) store.addAnnotation(d);
-        } else if (d.geometry.width >= 3 || d.geometry.height >= 3) {
+          if (Math.hypot(g.x2 - g.x1, g.y2 - g.y1) * uiScale >= 5) store.addAnnotation(d);
+        } else if (Math.max(d.geometry.width, d.geometry.height) * uiScale >= 3) {
           store.addAnnotation(d);
         }
         break;
@@ -183,18 +210,24 @@ export function AnnotationCanvas({
   function beginTextAt(tool: 'text' | 'sticky-note', p: Point) {
     const base = baseFields(tool);
     const fontSize = base.style.fontSize ?? 18;
+    // Box widths follow the view scale like font sizes (see EditorState.viewScale).
+    const viewScale = store.getState().viewScale;
     const draft: TextLikeAnnotation =
       tool === 'text'
         ? {
             ...base,
             type: 'text',
-            geometry: { x: round1(p.x), y: round1(p.y - lineHeightFor(fontSize) / 2), width: TEXT_DEFAULT_WIDTH },
+            geometry: {
+              x: round1(p.x),
+              y: round1(p.y - lineHeightFor(fontSize) / 2),
+              width: round1(TEXT_DEFAULT_WIDTH / viewScale),
+            },
             text: '',
           }
         : {
             ...base,
             type: 'sticky-note',
-            geometry: { x: round1(p.x), y: round1(p.y), width: STICKY_DEFAULT_WIDTH },
+            geometry: { x: round1(p.x), y: round1(p.y), width: round1(STICKY_DEFAULT_WIDTH / viewScale) },
             text: '',
           };
     store.beginTextEdit(draft, true);
@@ -257,13 +290,10 @@ export function AnnotationCanvas({
       }
       case 'select': {
         const selected = store.getSelected();
-        if (selected) {
-          for (const handle of resizeHandlesFor(selected)) {
-            if (distance(handlePosition(selected, handle, measure), p) <= 8 / uiScale) {
-              startGesture({ kind: 'resize', pointerId: e.pointerId, origin: selected, handle, current: null }, target);
-              return;
-            }
-          }
+        const handle = selected ? handleAt(selected, p) : null;
+        if (selected && handle) {
+          startGesture({ kind: 'resize', pointerId: e.pointerId, origin: selected, handle, start: p, current: null }, target);
+          return;
         }
         const hit = hitTest(s.annotations, p, tolerance, measure);
         store.select(hit?.id ?? null);
@@ -275,9 +305,30 @@ export function AnnotationCanvas({
     }
   }
 
+  /** Resize handle of the selected mark under the pointer, if any. */
+  function handleAt(selected: Annotation, p: Point): ResizeHandle | null {
+    for (const handle of resizeHandlesFor(selected)) {
+      if (distance(handlePosition(selected, handle, measure, SELECTION_PAD / uiScale), p) <= HANDLE_REACH / uiScale) {
+        return handle;
+      }
+    }
+    return null;
+  }
+
+  function updateHoverHandle(e: ReactPointerEvent<SVGSVGElement>) {
+    const s = store.getState();
+    const selected = interactive && s.tool === 'select' && !s.editing ? store.getSelected() : null;
+    const next = selected ? handleAt(selected, toCanvas(e.clientX, e.clientY)) : null;
+    if (next !== hoverHandle) setHoverHandle(next);
+  }
+
   function onPointerMove(e: ReactPointerEvent<SVGSVGElement>) {
     const gesture = gestureRef.current;
-    if (!gesture || e.pointerId !== gesture.pointerId) return;
+    if (!gesture) {
+      if (e.pointerType !== 'touch') updateHoverHandle(e);
+      return;
+    }
+    if (e.pointerId !== gesture.pointerId) return;
     const native = e.nativeEvent;
     const p = toCanvas(e.clientX, e.clientY);
 
@@ -331,7 +382,11 @@ export function AnnotationCanvas({
       }
       case 'resize': {
         if (!gesture.current) setHidden(new Set([gesture.origin.id]));
-        gesture.current = resizeAnnotation(gesture.origin, gesture.handle, p);
+        const isText = gesture.origin.type === 'text' || gesture.origin.type === 'sticky-note';
+        gesture.current = resizeAnnotation(gesture.origin, gesture.handle, p.x - gesture.start.x, p.y - gesture.start.y, {
+          keepAspect: e.shiftKey,
+          minSize: (isText ? 40 : 2) / uiScale,
+        });
         draftRenderer.render(gesture.current);
         break;
       }
@@ -384,10 +439,13 @@ export function AnnotationCanvas({
 
   return (
     <svg
-      ref={svgRef}
+      ref={setSvg}
       className={['don-canvas', interactive ? 'is-interactive' : '', className ?? ''].join(' ')}
       data-tool={state.tool}
-      viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeight}`}
+      data-handle={
+        selected && hoverHandle ? (selected.type === 'text' || selected.type === 'sticky-note' ? 'width' : hoverHandle) : undefined
+      }
+      viewBox={viewBox ?? `0 0 ${viewBoxWidth} ${viewBoxHeight}`}
       preserveAspectRatio="none"
       style={style}
       onPointerDown={onPointerDown}
@@ -414,6 +472,7 @@ export function AnnotationCanvas({
           draft={state.editing.draft}
           onChange={(text) => store.updateEditingText(text)}
           measure={measure}
+          uiScale={uiScale}
         />
       ) : null}
     </svg>
@@ -438,7 +497,7 @@ function SelectionOverlay({
   measure: ReturnType<typeof getTextMeasurer>;
 }) {
   const b = annotationBounds(annotation, measure);
-  const pad = 4 / uiScale;
+  const pad = SELECTION_PAD / uiScale;
   const handleSize = 9 / uiScale;
   return (
     <g className="don-selection" pointerEvents="none">
@@ -453,7 +512,7 @@ function SelectionOverlay({
         strokeDasharray={`${4 / uiScale} ${3 / uiScale}`}
       />
       {resizeHandlesFor(annotation).map((handle) => {
-        const p = handlePosition(annotation, handle, measure);
+        const p = handlePosition(annotation, handle, measure, pad);
         return (
           <rect
             key={handle}
@@ -476,10 +535,12 @@ function TextEditor({
   draft,
   onChange,
   measure,
+  uiScale,
 }: {
   draft: TextLikeAnnotation;
   onChange: (text: string) => void;
   measure: ReturnType<typeof getTextMeasurer>;
+  uiScale: number;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const layout = layoutTextAnnotation(draft, measure);
@@ -509,8 +570,9 @@ function TextEditor({
     margin: 0,
     padding: isSticky ? layout.padding : 0,
     border: 'none',
-    outline: `${Math.max(1, fontSize / 12)}px dashed #1c7ed6`,
-    borderRadius: 4,
+    // Editor chrome is sized in screen px (the foreignObject is scaled with the view).
+    outline: `${1.5 / uiScale}px dashed #1c7ed6`,
+    borderRadius: 4 / uiScale,
     resize: 'none',
     overflow: 'hidden',
     fontFamily: FONT_FAMILY,

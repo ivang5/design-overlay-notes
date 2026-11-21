@@ -6,8 +6,11 @@
 import type { OverlayMode, OverlayStatus } from '../shared/messages';
 
 const KEY = 'overlayTabs';
+const VIEWS_KEY = 'lastViews';
 
-type Registry = Record<string, OverlayStatus>;
+/** Overlay status plus which Figma file the tab shows (from Chrome's sender.url). */
+type Entry = OverlayStatus & { projectKey?: string | null };
+type Registry = Record<string, Entry>;
 
 async function read(): Promise<Registry> {
   const result = await chrome.storage.session.get(KEY);
@@ -18,12 +21,37 @@ async function write(registry: Registry): Promise<void> {
   await chrome.storage.session.set({ [KEY]: registry });
 }
 
-export async function setTabOverlay(tabId: number, status: OverlayStatus): Promise<void> {
+export async function setTabOverlay(tabId: number, status: OverlayStatus, projectKey?: string | null): Promise<void> {
   const registry = await read();
-  if (status.mode === 'closed' && !status.captureId) delete registry[tabId];
-  else registry[tabId] = status;
+  if (status.mode === 'closed' && !status.captureId && !projectKey) delete registry[tabId];
+  else registry[tabId] = { ...status, projectKey: projectKey ?? registry[tabId]?.projectKey ?? null };
   await write(registry);
   await updateBadge(tabId, status.mode);
+}
+
+/** Tabs whose overlay is running on the given Figma file (no host permission needed). */
+export async function tabsWithProject(projectKey: string): Promise<number[]> {
+  const registry = await read();
+  return Object.entries(registry)
+    .filter(([, entry]) => entry.projectKey === projectKey)
+    .map(([tabId]) => Number(tabId));
+}
+
+type ViewMap = Record<string, { s: number; tx: number; ty: number; at: number }>;
+
+/** Where a capture was last found in a tab, so showing it again starts there. */
+export async function rememberView(tabId: number, captureId: string, view: { s: number; tx: number; ty: number }): Promise<void> {
+  const views = ((await chrome.storage.session.get(VIEWS_KEY))[VIEWS_KEY] as ViewMap | undefined) ?? {};
+  views[`${tabId}:${captureId}`] = { ...view, at: Date.now() };
+  // Keep the map small: the 50 most recent.
+  const entries = Object.entries(views).sort((a, b) => b[1].at - a[1].at).slice(0, 50);
+  await chrome.storage.session.set({ [VIEWS_KEY]: Object.fromEntries(entries) });
+}
+
+export async function lastView(tabId: number, captureId: string): Promise<{ s: number; tx: number; ty: number } | null> {
+  const views = ((await chrome.storage.session.get(VIEWS_KEY))[VIEWS_KEY] as ViewMap | undefined) ?? {};
+  const view = views[`${tabId}:${captureId}`];
+  return view ? { s: view.s, tx: view.tx, ty: view.ty } : null;
 }
 
 export async function removeTab(tabId: number): Promise<void> {

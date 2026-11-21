@@ -1,25 +1,79 @@
-import { useRef, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from 'react';
-import { Camera, Check, Eye, EyeOff, GripVertical, Layers, PanelRight, Pencil, X } from 'lucide-react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useSyncExternalStore,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
+import {
+  Camera,
+  Check,
+  Eye,
+  EyeOff,
+  Focus,
+  GripVertical,
+  Layers,
+  LocateFixed,
+  LocateOff,
+  PanelRight,
+  Pencil,
+  X,
+} from 'lucide-react';
 import { AnnotationCanvas } from '../editor/AnnotationCanvas';
-import { DEFAULT_SHORTCUTS } from '../shared/constants';
+import { viewBoxFor, type ViewTransform } from '../shared/view-transform';
 import { Divider, SaveIndicator, ToolButton, ToolbarShell, ToolControls } from '../editor/Toolbar';
 import type { Notice, OverlayController, OverlayUiState } from './controller';
 
 const EDGE_MARGIN = 8;
 
+const withShortcut = (label: string, shortcut: string) => (shortcut ? `${label} (${shortcut})` : label);
+
 export function OverlayApp({ controller }: { controller: OverlayController }) {
   const ui = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
-  const { mode, capture, viewport } = ui;
-  const showCanvas = capture !== null && (mode === 'browse' || mode === 'annotate');
+  const { mode, capture, viewport, view } = ui;
+  // While the capture's area is being searched for (or is out of view), marks are hidden.
+  const placed = view.status === 'off' || view.status === 'following';
+  const showCanvas = capture !== null && (mode === 'browse' || mode === 'annotate') && placed;
+
+  // The SVG renders with the committed transform (viewBox). Predictions made
+  // while Figma moves are applied on top as a CSS transform of the SVG layer:
+  // the compositor moves it in the same frame without re-rendering the marks.
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const committedRef = useRef<ViewTransform>(view.transform);
+  committedRef.current = view.transform;
+  const applyLive = useCallback(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const live = controller.getLiveTransform();
+    const committed = committedRef.current;
+    const k = live.s / committed.s;
+    const dx = live.tx - k * committed.tx;
+    const dy = live.ty - k * committed.ty;
+    const identity = Math.abs(k - 1) < 1e-6 && Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01;
+    svg.style.transform = identity ? '' : `matrix(${k}, 0, 0, ${k}, ${dx}, ${dy})`;
+  }, [controller]);
+  const setSvg = useCallback(
+    (element: SVGSVGElement | null) => {
+      svgRef.current = element;
+      applyLive();
+    },
+    [applyLive],
+  );
+  useLayoutEffect(() => applyLive());
+  useEffect(() => controller.subscribeLive(applyLive), [controller, applyLive]);
 
   return (
     <>
       {showCanvas ? (
         <AnnotationCanvas
           store={controller.store}
-          // 1 SVG unit = 1 CSS pixel of the live viewport (identity transform).
+          // SVG units are capture CSS px; the viewBox maps them to the live view.
           viewBoxWidth={viewport.width}
           viewBoxHeight={viewport.height}
+          viewBox={viewBoxFor(view.transform, viewport.width, viewport.height)}
+          svgElementRef={setSvg}
+          uiScale={view.transform.s}
           interactive={mode === 'annotate'}
           className="don-live-canvas"
           background={
@@ -135,7 +189,7 @@ function OverlayToolbar({
     return (
       <ToolbarShell className="is-compact">
         {grip}
-        <button type="button" className="don-text-btn" onClick={() => controller.toggleVisibility()} title={`Show notes (${DEFAULT_SHORTCUTS.toggleVisibility})`}>
+        <button type="button" className="don-text-btn" onClick={() => controller.toggleVisibility()} title={withShortcut('Show notes', ui.shortcuts.toggleVisibility)}>
           <EyeOff size={15} aria-hidden="true" />
           Notes hidden
         </button>
@@ -145,12 +199,56 @@ function OverlayToolbar({
   }
 
   const title = busy ? 'Capturing…' : (capture?.title ?? 'No capture');
+  const viewStatus = ui.view.status;
+  const followButton = (
+    <ToolButton
+      label={
+        ui.followView
+          ? 'Notes follow Figma scrolling and zoom (click to pin them to the screen)'
+          : 'Notes are pinned to the screen (click to make them follow Figma scrolling and zoom)'
+      }
+      icon={ui.followView ? LocateFixed : LocateOff}
+      active={ui.followView}
+      disabled={!capture}
+      onClick={() => controller.setFollowView(!ui.followView)}
+    />
+  );
+  const statusChip =
+    viewStatus === 'searching' ? (
+      <span className="don-status" role="status">
+        Finding notes…
+      </span>
+    ) : viewStatus === 'lost' ? (
+      <button type="button" className="don-status is-warn" onClick={() => controller.findNotes()} title="Find the area of these notes and go there">
+        Not in view · Find notes
+      </button>
+    ) : ui.marksOffscreen ? (
+      <button
+        type="button"
+        className="don-status is-link"
+        onClick={() => controller.goToCapturedView()}
+        title="Your notes are outside the visible area: scroll and zoom back to them"
+      >
+        Notes off-screen · Go to them
+      </button>
+    ) : null;
+  const goToViewButton =
+    ui.followView && capture ? (
+      <ToolButton
+        label="Go to the captured view (scroll and zoom Figma back to where this capture was taken)"
+        icon={Focus}
+        disabled={viewStatus !== 'following'}
+        onClick={() => controller.goToCapturedView()}
+      />
+    ) : null;
   const common = (
     <>
+      {followButton}
+      {goToViewButton}
       <ToolButton
         label="New capture of the current view"
         icon={Camera}
-        shortcut={DEFAULT_SHORTCUTS.newCapture}
+        shortcut={ui.shortcuts.newCapture || undefined}
         disabled={busy}
         onClick={() => void controller.takeCapture().catch(() => undefined)}
       />
@@ -161,7 +259,7 @@ function OverlayToolbar({
         disabled={!capture}
         onClick={() => void controller.toggleReference()}
       />
-      <ToolButton label="Hide notes" icon={Eye} shortcut={DEFAULT_SHORTCUTS.toggleVisibility} onClick={() => controller.toggleVisibility()} />
+      <ToolButton label="Hide notes" icon={Eye} shortcut={ui.shortcuts.toggleVisibility || undefined} onClick={() => controller.toggleVisibility()} />
       <ToolButton label="Open notes manager" icon={PanelRight} onClick={() => controller.openPanel()} />
     </>
   );
@@ -173,11 +271,12 @@ function OverlayToolbar({
         <span className="don-chip" title={capture ? `Capture: ${capture.title}` : undefined}>
           {title}
         </span>
+        {statusChip}
         <button
           type="button"
           className="don-text-btn is-primary"
           onClick={() => controller.setMode('annotate')}
-          title={`Draw over the design (${DEFAULT_SHORTCUTS.activate})`}
+          title={withShortcut('Draw over the design', ui.shortcuts.activate)}
         >
           <Pencil size={15} aria-hidden="true" />
           Annotate
@@ -193,6 +292,7 @@ function OverlayToolbar({
   return (
     <ToolbarShell>
       {grip}
+      {statusChip}
       <ToolControls store={controller.store} />
       <Divider />
       {common}

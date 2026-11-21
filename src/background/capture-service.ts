@@ -1,18 +1,9 @@
-import { MIN_CAPTURE_INTERVAL_MS, THUMBNAIL_WIDTH } from '../shared/constants';
+import { THUMBNAIL_WIDTH } from '../shared/constants';
 import { dataUrlToBlob } from '../shared/binary';
 import { cleanFigmaTitle, parseFigmaUrl, projectKeyFor, sanitizePageUrl } from '../shared/figma-url';
 import type { Capture, ViewportMetadata } from '../shared/schemas';
 import { createCapture } from '../database/repository';
-
-// Ephemeral by design: if the worker restarts, the worst case is that the
-// next capture is not delayed, and Chrome's own rate limit still applies.
-let lastCaptureAt = 0;
-
-async function respectRateLimit(): Promise<void> {
-  const wait = lastCaptureAt + MIN_CAPTURE_INTERVAL_MS - Date.now();
-  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-  lastCaptureAt = Date.now();
-}
+import { captureVisibleTabThrottled } from './capture-throttle';
 
 async function makeThumbnail(screenshot: Blob, width: number, height: number): Promise<Blob | null> {
   try {
@@ -44,8 +35,7 @@ export async function captureTab(
   trustedPageUrl: string,
   metadata: ViewportMetadata,
 ): Promise<Capture> {
-  await respectRateLimit();
-  const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+  const dataUrl = await captureVisibleTabThrottled(windowId, { format: 'png' });
   const screenshot = dataUrlToBlob(dataUrl);
 
   const probe = await createImageBitmap(screenshot);

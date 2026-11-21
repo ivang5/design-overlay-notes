@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   annotationBounds,
   distanceToSegment,
+  handlePosition,
   hitTest,
   hitTestAnnotation,
   normalizeRect,
   resizeAnnotation,
+  resizeHandlesFor,
   smoothPath,
   tint,
   translateAnnotation,
@@ -78,18 +80,51 @@ describe('transforms', () => {
     expect(r.type === 'rectangle' && r.geometry).toMatchObject({ x: 101, y: 102, width: 200, height: 100 });
   });
 
-  it('resizes boxes from the corner handle, normalizing negative sizes', () => {
-    const r = resizeAnnotation(rectangle(), 'se', { x: 50, y: 50 });
+  it('resizes boxes from a corner handle, keeping the opposite corner fixed and normalizing flips', () => {
+    // rectangle: x 100..300, y 100..200. Drag the SE corner back past the NW corner.
+    const r = resizeAnnotation(rectangle(), 'se', -250, -150);
     expect(r.type === 'rectangle' && r.geometry).toEqual({ x: 50, y: 50, width: 50, height: 50 });
+    const nw = resizeAnnotation(rectangle(), 'nw', 50, 20);
+    expect(nw.type === 'rectangle' && nw.geometry).toEqual({ x: 150, y: 120, width: 150, height: 80 });
+  });
+
+  it('keeps the aspect ratio with keepAspect', () => {
+    const r = resizeAnnotation(rectangle(), 'se', 200, 0, { keepAspect: true });
+    expect(r.type === 'rectangle' && r.geometry).toEqual({ x: 100, y: 100, width: 400, height: 200 });
+  });
+
+  it('scales freehand strokes relative to the opposite corner', () => {
+    const s = stroke('s', [0, 0, 100, 50, 200, 100]);
+    const scaled = resizeAnnotation(s, 'se', 200, 100);
+    expect(scaled.type === 'stroke' && scaled.geometry.points).toEqual([0, 0, 200, 100, 400, 200]);
+    const fromNw = resizeAnnotation(s, 'nw', 100, 50);
+    expect(fromNw.type === 'stroke' && fromNw.geometry.points).toEqual([100, 50, 150, 75, 200, 100]);
+  });
+
+  it('only translates the flat axis of a straight stroke and never collapses it', () => {
+    const line = stroke('l', [10, 10, 50, 10, 90, 10]);
+    const r = resizeAnnotation(line, 'se', 80, 30);
+    expect(r.type === 'stroke' && r.geometry.points).toEqual([10, 10, 90, 10, 170, 10]);
+    const collapsed = resizeAnnotation(line, 'se', -80, 0, { minSize: 2 });
+    expect(collapsed.type === 'stroke' && collapsed.geometry.points).toEqual([10, 10, 11, 10, 12, 10]);
+  });
+
+  it('offers corner handles for strokes and shapes, endpoints for arrows, width for text', () => {
+    expect(resizeHandlesFor(stroke())).toEqual(['nw', 'ne', 'sw', 'se']);
+    expect(resizeHandlesFor(ellipse())).toEqual(['nw', 'ne', 'sw', 'se']);
+    expect(resizeHandlesFor(arrow())).toEqual(['start', 'end']);
+    expect(resizeHandlesFor(text())).toEqual(['se']);
+    // Corner handles sit on the padded selection outline.
+    expect(handlePosition(rectangle(), 'nw', measure, 4)).toEqual({ x: 94, y: 94 });
   });
 
   it('moves arrow endpoints independently', () => {
-    const a = resizeAnnotation(arrow(), 'start', { x: 20, y: 30 });
+    const a = resizeAnnotation(arrow(), 'start', 20, 30);
     expect(a.type === 'arrow' && a.geometry).toEqual({ x1: 20, y1: 30, x2: 100, y2: 100 });
   });
 
   it('resizes text wrap width with a minimum', () => {
-    const t = resizeAnnotation(text(), 'se', { x: 510, y: 0 });
+    const t = resizeAnnotation(text(), 'se', -500, 0);
     expect(t.type === 'text' && t.geometry.width).toBe(40);
   });
 

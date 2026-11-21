@@ -52,6 +52,9 @@ export default defineManifest((env) => {
       default_path: 'src/sidepanel/index.html',
     },
     permissions: ['activeTab', 'scripting', 'storage', 'sidePanel'],
+    // Opt-in (Settings → "Work on Figma tabs without a click"): lets "Open in
+    // Figma" and side-panel actions reach Figma tabs without an icon click.
+    optional_host_permissions: ['https://www.figma.com/*'],
     ...(isE2E ? { host_permissions: ['<all_urls>'] } : {}),
     commands: {
       _execute_action: {

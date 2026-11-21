@@ -104,3 +104,22 @@ body {
   color: var(--dp-muted);
   font-size: 14px;
 }
+
+.rv-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--dp-accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.rv-note {
+  color: var(--dp-text);
+}
+
+.rv-header > .rv-titles {
+  flex: 1;
+  min-width: 0;
+}

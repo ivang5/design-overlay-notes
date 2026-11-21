@@ -15,6 +15,7 @@ import {
   annotationListSchema,
   captureSchema,
   idSchema,
+  regionGridSchema,
   settingsPatchSchema,
   viewportMetadataSchema,
   type Annotation,
@@ -24,6 +25,22 @@ import {
 
 export const overlayModeSchema = z.enum(['annotate', 'browse', 'hidden', 'closed']);
 export type OverlayMode = z.infer<typeof overlayModeSchema>;
+
+const finite = (limit: number) => z.number().min(-limit).max(limit);
+
+/** live = s · capture + t, in CSS pixels (see shared/view-transform.ts). */
+export const viewTransformSchema = z.object({
+  s: z.number().min(0.001).max(1_000),
+  tx: finite(10_000_000),
+  ty: finite(10_000_000),
+});
+
+const rectSchema = z.object({
+  x: finite(100_000),
+  y: finite(100_000),
+  width: z.number().min(0).max(100_000),
+  height: z.number().min(0).max(100_000),
+});
 
 // ---------------------------------------------------------------------------
 // Content script → service worker
@@ -48,19 +65,56 @@ export const contentRequestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('SETTINGS_SET'), patch: settingsPatchSchema }),
   z.object({ type: z.literal('OPEN_SIDE_PANEL') }),
   z.object({ type: z.literal('OPEN_REVIEW'), captureId: idSchema }),
+  z.object({
+    type: z.literal('VIEW_ALIGN'),
+    captureId: idSchema,
+    /** Predicted transform (dead-reckoned from wheel/drag input), if any. */
+    seed: viewTransformSchema.nullable(),
+    /** Our marks are on screen at `seed`; their pixels must be ignored. */
+    inkVisible: z.boolean(),
+    /** Figma zoom now ÷ Figma zoom at capture time, if both are known. */
+    scaleHint: z.number().min(0.001).max(1_000).nullable(),
+    /** Relative uncertainty of scaleHint (0.02 = ±2 %). */
+    scaleTolerance: z.number().min(0).max(1).nullable(),
+    /** The seed's scale comes from an exact zoom prediction. */
+    lockScale: z.boolean(),
+    /** Live viewport cells showing the Figma canvas. */
+    region: regionGridSchema.nullable(),
+    /** Live areas to ignore (our toolbar, banners), CSS px. */
+    exclude: z.array(rectSchema).max(32),
+    viewport: z.object({ width: z.number().positive().max(100_000), height: z.number().positive().max(100_000) }),
+  }),
 ]);
 export type ContentRequest = z.infer<typeof contentRequestSchema>;
+
+/** The user's current global shortcuts (chrome://extensions/shortcuts); '' when unset. */
+export interface Shortcuts {
+  activate: string;
+  newCapture: string;
+  toggleVisibility: string;
+}
+
+export type ViewAlignResult =
+  | { status: 'aligned'; transform: z.infer<typeof viewTransformSchema>; ncc: number; method: 'refine' | 'search' }
+  | { status: 'not-found'; ncc: number }
+  | { status: 'unavailable'; reason: string };
 
 export interface ContentResponses {
   OVERLAY_STATE: null;
   CAPTURE_CREATE: { capture: Capture };
-  CAPTURE_LOAD: { capture: Capture; annotations: Annotation[] };
+  CAPTURE_LOAD: {
+    capture: Capture;
+    annotations: Annotation[];
+    /** Where this capture was last found in the requesting tab (a good first guess). */
+    lastView?: { s: number; tx: number; ty: number } | null;
+  };
   ANNOTATIONS_SAVE: { savedAt: number };
   SCREENSHOT_GET: { dataUrl: string };
-  SETTINGS_GET: { settings: Settings };
+  SETTINGS_GET: { settings: Settings; shortcuts: Shortcuts };
   SETTINGS_SET: { settings: Settings };
   OPEN_SIDE_PANEL: null;
   OPEN_REVIEW: null;
+  VIEW_ALIGN: ViewAlignResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,8 +140,15 @@ export const pageRequestSchema = z.discriminatedUnion('type', [
     force: z.boolean(),
   }),
   z.object({ type: z.literal('DATA_CHANGED'), change: dataChangeSchema }),
+  z.object({ type: z.literal('PANEL_OPEN_IN_FIGMA'), windowId: z.number().int(), captureId: idSchema }),
 ]);
 export type PageRequest = z.infer<typeof pageRequestSchema>;
+
+export type OpenInFigmaResult =
+  /** The notes are shown (or will be as soon as the page has loaded). */
+  | { status: 'shown' }
+  /** Chrome needs a click on the extension icon in that tab first. */
+  | { status: 'needs-click' };
 
 export interface ActiveTabInfo {
   tabId: number | null;
@@ -107,6 +168,7 @@ export interface PageResponses {
   PANEL_NEW_CAPTURE: { captureId: string | null };
   PANEL_SHOW_ON_PAGE: ShowOnPageResult;
   DATA_CHANGED: null;
+  PANEL_OPEN_IN_FIGMA: OpenInFigmaResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +182,12 @@ export const tabCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('TOGGLE_ANNOTATE') }),
   z.object({ type: z.literal('TOGGLE_VISIBILITY') }),
   z.object({ type: z.literal('GET_VIEWPORT') }),
-  z.object({ type: z.literal('SHOW_CAPTURE'), captureId: idSchema }),
+  z.object({
+    type: z.literal('SHOW_CAPTURE'),
+    captureId: idSchema,
+    /** Once found, scroll/zoom Figma back to the captured view ("Open in Figma"). */
+    goToView: z.boolean().optional(),
+  }),
   z.object({ type: z.literal('CAPTURE_DELETED'), captureId: idSchema.nullable() }),
   z.object({ type: z.literal('CAPTURE_META_CHANGED'), capture: captureSchema }),
   z.object({
@@ -128,6 +195,7 @@ export const tabCommandSchema = z.discriminatedUnion('type', [
     captureId: idSchema,
     sourceId: z.string().max(64).optional(),
   }),
+  z.object({ type: z.literal('SETTINGS_CHANGED'), followView: z.boolean() }),
 ]);
 export type TabCommand = z.infer<typeof tabCommandSchema>;
 
@@ -154,6 +222,7 @@ export interface TabResponses {
   CAPTURE_DELETED: null;
   CAPTURE_META_CHANGED: null;
   ANNOTATIONS_CHANGED: null;
+  SETTINGS_CHANGED: null;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,8 +267,19 @@ export async function sendToBackground(message: ContentRequest | PageRequest): P
   return unwrap(response);
 }
 
-/** Broadcast a data change to the service worker and other extension pages. */
+// chrome.runtime.sendMessage never delivers to the sending page itself, so
+// changes are also announced inside the page (e.g. the side panel's own list).
+const localChanges = new EventTarget();
+
+export function onLocalDataChange(listener: (change: DataChange) => void): () => void {
+  const handler = (event: Event) => listener((event as CustomEvent<DataChange>).detail);
+  localChanges.addEventListener('change', handler);
+  return () => localChanges.removeEventListener('change', handler);
+}
+
+/** Broadcast a data change to this page, the service worker and other extension pages. */
 export function broadcastDataChange(change: DataChange): void {
+  localChanges.dispatchEvent(new CustomEvent<DataChange>('change', { detail: change }));
   chrome.runtime.sendMessage({ type: 'DATA_CHANGED', change } satisfies PageRequest).catch(() => {
     // No listener awake (e.g. nothing else open) — nothing to notify.
   });

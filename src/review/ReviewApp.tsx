@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ImageDown, Lock } from 'lucide-react';
+import { ClipboardCopy, ImageDown, Lock } from 'lucide-react';
 import { AnnotationCanvas } from '../editor/AnnotationCanvas';
 import { Autosaver } from '../editor/autosave';
 import { handleEditorKeydown } from '../editor/keyboard';
@@ -12,7 +12,7 @@ import { createId } from '../shared/ids';
 import { broadcastDataChange, errorMessage } from '../shared/messages';
 import type { Capture, Project } from '../shared/schemas';
 import { useDataChanges } from '../sidepanel/hooks';
-import { exportCapturePng, saveCaptureMeta } from '../sidepanel/actions';
+import { copyCapturePng, exportCapturePng, openCaptureInFigma, saveCaptureMeta } from '../sidepanel/actions';
 import { formatDateTime } from '../sidepanel/components/common';
 
 const STAGE_PADDING = 24;
@@ -41,6 +41,7 @@ export function ReviewApp({ captureId }: { captureId: string | null }) {
   const [deleted, setDeleted] = useState(false);
   const [title, setTitle] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState({ width: 800, height: 600 });
 
@@ -66,6 +67,7 @@ export function ReviewApp({ captureId }: { captureId: string | null }) {
       }
       store.setColor(settings.color);
       store.setSize(settings.size);
+      store.setFontSize(settings.fontSize);
       store.load(c.id, annotations);
       autosaver.markClean();
       url = URL.createObjectURL(images.screenshot);
@@ -174,6 +176,26 @@ export function ReviewApp({ captureId }: { captureId: string | null }) {
     else if (next !== capture.title) void saveCaptureMeta(capture.id, { title: next }).then(setCapture);
   };
 
+  const copyPng = async () => {
+    try {
+      store.finishTextEdit();
+      await autosaver.flush();
+      await copyCapturePng(capture);
+      setNote('Annotated image copied to the clipboard.');
+    } catch (e) {
+      setSaveStatus({ state: 'error', message: errorMessage(e) });
+    }
+  };
+
+  const openInFigma = async () => {
+    try {
+      const result = await openCaptureInFigma(capture.id);
+      if (result.status === 'needs-click') setNote('Click the Design Overlay Notes icon on the Figma tab to show these notes there.');
+    } catch (e) {
+      setNote(errorMessage(e));
+    }
+  };
+
   const exportPng = async () => {
     setExporting(true);
     try {
@@ -209,12 +231,16 @@ export function ReviewApp({ captureId }: { captureId: string | null }) {
               {Math.round(capture.devicePixelRatio * 100) / 100}x
             </span>
             {capture.pageUrl ? (
-              <a href={capture.pageUrl} target="_blank" rel="noreferrer noopener">
+              <button type="button" className="rv-link" onClick={() => void openInFigma()}>
                 Open in Figma
-              </a>
+              </button>
             ) : null}
+            {note ? <span className="rv-note">{note}</span> : null}
           </div>
         </div>
+        <button type="button" className="dp-btn" onClick={() => void copyPng()}>
+          <ClipboardCopy size={15} aria-hidden="true" /> Copy image
+        </button>
         <button type="button" className="dp-btn is-primary" disabled={exporting} onClick={() => void exportPng()}>
           <ImageDown size={15} aria-hidden="true" /> {exporting ? 'Exporting…' : 'Export PNG'}
         </button>

@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Canvas Fixture – Figma</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; font: 12px system-ui, sans-serif; background: #fff; }
+      #left, #right { position: fixed; top: 0; bottom: 0; width: 240px; background: #fff; z-index: 2; }
+      #left { left: 0; border-right: 1px solid #e5e5e5; }
+      #right { right: 0; border-left: 1px solid #e5e5e5; }
+      #left li { padding: 6px 12px; list-style: none; }
+      #zoom { position: absolute; top: 12px; right: 12px; border: 0; background: none; font: inherit; }
+      #canvas { position: fixed; top: 0; left: 240px; width: calc(100vw - 480px); height: 100vh; display: block; }
+      #tools { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); width: 420px; height: 46px;
+        border-radius: 12px; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.2); z-index: 3; }
+      .focus-target { position: fixed; left: 0; top: -200px; width: 1px; height: 16px; opacity: 0; }
+      .page { display: block; width: 100%; padding: 6px 12px; border: 0; background: none; text-align: left; font: inherit; }
+      .page[aria-current="page"] { background: #eee; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <div id="left">
+      <!-- Same markup Figma uses for its Pages panel (data-testid + aria-current). -->
+      <div data-testid="PagesRowWrapper"><button class="page" aria-current="page">Page 1</button></div>
+      <div data-testid="PagesRowWrapper"><button class="page">Page 2</button></div>
+      <ul><li>Frame 01</li><li>Frame 02</li><li>Frame 03</li></ul>
+    </div>
+    <canvas id="canvas"></canvas>
+    <div id="right"><button id="zoom" aria-label="100%, zoom and view options">100%</button></div>
+    <div id="tools"><button id="hand" aria-label="Hand tool" aria-pressed="false">✋</button></div>
+    <input class="focus-target" aria-label="Figma Design" />
+    <script>
+      // A tiny Figma-like canvas: screen = s · scene + t (viewport CSS px).
+      // Zoom follows Figma's measured Ctrl+wheel curve; the pan clamp (100 px
+      // per event, Figma: 120) deliberately differs so the correction path runs.
+      const canvas = document.getElementById('canvas');
+      const ctx = canvas.getContext('2d');
+      const zoomButton = document.getElementById('zoom');
+      const view = { s: 0.5, tx: 300, ty: 120 };
+      let page = 1;
+      window.__view = view;
+      window.__page = () => page;
+
+      function rand(seed) {
+        let state = seed;
+        return () => ((state = (state * 1664525 + 1013904223) % 4294967296) / 4294967296);
+      }
+      const frames = [];
+      {
+        const r = rand(11);
+        for (let f = 0; f < 6; f++) {
+          const x = (f % 3) * 620;
+          const y = Math.floor(f / 3) * 760;
+          const items = [];
+          items.push({ kind: 'rect', x: 0, y: 0, w: 520, h: 58, c: `hsl(${Math.round(r() * 360)},45%,${30 + r() * 30}%)` });
+          for (let k = 0; k < 9; k++) items.push({ kind: 'rect', x: 32, y: 96 + k * 46, w: 120 + r() * 300, h: 14, c: `rgb(${70 + r() * 90},${70 + r() * 90},${80 + r() * 90})` });
+          items.push({ kind: 'circle', x: 430, y: 160, r: 36 + r() * 16, c: `hsl(${Math.round(r() * 360)},60%,55%)` });
+          items.push({ kind: 'rect', x: 32, y: 560, w: 180, h: 54, c: `hsl(${Math.round(r() * 360)},70%,45%)` });
+          items.push({ kind: 'text', x: 32, y: 44, t: `Screen ${f + 1}`, c: '#fff' });
+          frames.push({ x, y, w: 520, h: 660, items, label: `0${f + 1}` });
+        }
+      }
+
+      function resize() {
+        const dpr = devicePixelRatio;
+        const r = canvas.getBoundingClientRect();
+        canvas.width = Math.round(r.width * dpr);
+        canvas.height = Math.round(r.height * dpr);
+        draw();
+      }
+
+      function draw() {
+        const dpr = devicePixelRatio;
+        const r = canvas.getBoundingClientRect();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.fillStyle = page === 1 ? '#e5e5e5' : '#f5f0e6';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        if (page !== 1) {
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          ctx.fillStyle = '#b0a080';
+          ctx.font = '24px system-ui';
+          ctx.fillText('Page 2 (nothing here)', 40, 80);
+          return;
+        }
+        // Scene → canvas-local pixels.
+        ctx.setTransform(dpr * view.s, 0, 0, dpr * view.s, dpr * (view.tx - r.left), dpr * (view.ty - r.top));
+        for (const f of frames) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(f.x, f.y, f.w, f.h);
+          for (const it of f.items) {
+            ctx.fillStyle = it.c;
+            if (it.kind === 'rect') ctx.fillRect(f.x + it.x, f.y + it.y, it.w, it.h);
+            else if (it.kind === 'circle') { ctx.beginPath(); ctx.arc(f.x + it.x, f.y + it.y, it.r, 0, Math.PI * 2); ctx.fill(); }
+            else { ctx.font = '600 28px system-ui'; ctx.fillText(it.t, f.x + it.x, f.y + it.y); }
+          }
+        }
+        zoomButton.textContent = `${Math.round(view.s * 100)}%`;
+        zoomButton.setAttribute('aria-label', `${Math.round(view.s * 100)}%, zoom and view options`);
+      }
+
+      function zoomAbout(factor, cx, cy) {
+        view.tx = cx + factor * (view.tx - cx);
+        view.ty = cy + factor * (view.ty - cy);
+        view.s *= factor;
+        draw();
+      }
+
+      canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        if (e.ctrlKey || e.metaKey) {
+          const m = Math.abs(e.deltaY);
+          zoomAbout(Math.exp(-Math.sign(e.deltaY) * 0.005 * Math.min(m, 9.6549 * Math.cbrt(m))), e.clientX, e.clientY);
+        } else {
+          const clamp = (v) => Math.max(-100, Math.min(100, v));
+          view.tx -= clamp(e.deltaX);
+          view.ty -= clamp(e.deltaY);
+          draw();
+        }
+      }, { passive: false });
+
+      // Hand tool (H) / move tool (V): drag pans the canvas while the hand tool is active.
+      const hand = document.getElementById('hand');
+      let handActive = false;
+      let dragFrom = null;
+      const setHand = (on) => { handActive = on; hand.setAttribute('aria-pressed', String(on)); };
+      canvas.addEventListener('pointerdown', (e) => {
+        if (handActive && e.button === 0) { dragFrom = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); }
+      });
+      canvas.addEventListener('pointermove', (e) => {
+        if (!dragFrom) return;
+        view.tx += e.clientX - dragFrom.x;
+        view.ty += e.clientY - dragFrom.y;
+        dragFrom = { x: e.clientX, y: e.clientY };
+        draw();
+      });
+      canvas.addEventListener('pointerup', () => { dragFrom = null; });
+
+      function setPage(n) {
+        page = n;
+        document.querySelectorAll('.page').forEach((b, i) => {
+          if (i + 1 === n) b.setAttribute('aria-current', 'page');
+          else b.removeAttribute('aria-current');
+        });
+        draw();
+      }
+      document.querySelectorAll('.page').forEach((b, i) => b.addEventListener('click', () => setPage(i + 1)));
+
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'h') setHand(true);
+        if (e.key === 'v') setHand(false);
+        if (e.shiftKey && e.code === 'Digit1') {
+          // Zoom to fit all frames.
+          const r = canvas.getBoundingClientRect();
+          const s = Math.min((r.width - 80) / 1760, (r.height - 80) / 1420);
+          view.s = s;
+          view.tx = r.left + (r.width - 1760 * s) / 2;
+          view.ty = r.top + (r.height - 1420 * s) / 2;
+          draw();
+        } else if (e.key === '=') {
+          const r = canvas.getBoundingClientRect();
+          zoomAbout(2, r.left + r.width / 2, r.top + r.height / 2);
+        } else if (e.key === 'PageDown') {
+          setPage(2);
+        } else if (e.key === 'PageUp') {
+          setPage(1);
+        }
+      });
+
+      document.querySelector('.focus-target').focus();
+      addEventListener('resize', resize);
+      resize();
+    </script>
+  </body>
+</html>

@@ -279,13 +279,16 @@ try {
   await panel.getByRole('searchbox').fill('');
   await panel.waitForFunction(() => document.querySelectorAll('article.dp-card').length === 2);
   const newest = panel.locator('article.dp-card').first(); // newest first = the capture open on the page
-  await newest.getByRole('button', { name: 'Delete capture' }).click();
+  await newest.getByRole('button', { name: 'More actions' }).click();
+  await newest.getByRole('menuitem', { name: /Delete capture/ }).click();
   await newest.getByRole('button', { name: 'Delete', exact: true }).click();
   await waitFor(async () => (await readStore('captures')).length === 1, 'capture deleted');
+  // The manager's own list must update without a reload.
+  await panel.waitForFunction(() => document.querySelectorAll('article.dp-card').length === 1, null, { timeout: 3_000 });
   const ping = () => sw.evaluate((id) => chrome.tabs.sendMessage(id, { type: 'PING' }, { frameId: 0 }), tabId);
   await waitFor(async () => (await ping()).data?.mode === 'closed', 'overlay closed after delete');
   assert.equal((await readStore('captureImages')).length, 1, 'screenshot deleted with the capture');
-  log('deleting the open capture in the manager removes it and closes it on the page');
+  log('deleting the open capture in the manager removes it from the list at once and closes it on the page');
 
   // --- show a saved capture over the live page ----------------------------------
   await page.bringToFront();

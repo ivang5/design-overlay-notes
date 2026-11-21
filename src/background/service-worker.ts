@@ -13,8 +13,11 @@ import {
   toggleVisibilityOnTab,
 } from './activation';
 import { onRuntimeMessage } from './message-router';
-import { removeTab } from './overlay-registry';
+import { forgetPendingShow } from './open-in-figma';
+import { removeTab, tabsShowing } from './overlay-registry';
+import { sendToTabQuietly } from './tab-bridge';
 import { restrictStorageAccess } from '../database/settings';
+import type { Settings } from '../shared/schemas';
 
 chrome.runtime.onInstalled.addListener(() => {
   void restrictStorageAccess();
@@ -51,6 +54,19 @@ chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   void removeTab(tabId);
+  void forgetPendingShow(tabId);
+});
+
+// Settings changed in the notes manager: tell open overlays.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.settings) return;
+  const before = changes.settings.oldValue as Partial<Settings> | undefined;
+  const after = changes.settings.newValue as Partial<Settings> | undefined;
+  if (after?.followView === undefined || before?.followView === after.followView) return;
+  const followView = after.followView;
+  void tabsShowing(null).then((tabs) => {
+    for (const tabId of tabs) sendToTabQuietly(tabId, { type: 'SETTINGS_CHANGED', followView });
+  });
 });
 
 // Test hook, compiled in only for the e2e build (dist-e2e/).

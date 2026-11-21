@@ -14,7 +14,7 @@ export const BACKUP_FORMAT_VERSION = 1;
 export const AUTOSAVE_DEBOUNCE_MS = 350;
 
 /** Chrome allows at most 2 captureVisibleTab calls per second. Keep a margin. */
-export const MIN_CAPTURE_INTERVAL_MS = 600;
+export const MIN_CAPTURE_INTERVAL_MS = 520;
 
 /** Thumbnail width in pixels for the notes manager. */
 export const THUMBNAIL_WIDTH = 480;
@@ -40,11 +40,13 @@ export const PALETTE = [
 
 export const DEFAULT_COLOR = PALETTE[0];
 
-/** Size presets (S / M / L) shared by all tools. */
+/** Stroke size presets (S / M / L) for pen, highlighter, arrow and shapes. */
 export type SizePreset = 's' | 'm' | 'l';
 export const STROKE_WIDTHS: Record<SizePreset, number> = { s: 2, m: 4, l: 8 };
 export const HIGHLIGHTER_WIDTHS: Record<SizePreset, number> = { s: 12, m: 20, l: 32 };
-export const FONT_SIZES: Record<SizePreset, number> = { s: 14, m: 18, l: 26 };
+/** Font sizes (CSS px at 100% view scale) offered for text and sticky notes. */
+export const TEXT_FONT_SIZES = [10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64] as const;
+export const DEFAULT_FONT_SIZE = 18;
 export const HIGHLIGHTER_OPACITY = 0.35;
 
 export const TEXT_DEFAULT_WIDTH = 280;

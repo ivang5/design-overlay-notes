@@ -14,10 +14,10 @@ import {
   Undo2,
   type LucideIcon,
 } from 'lucide-react';
-import { PALETTE, type SizePreset } from '../shared/constants';
-import type { Tool } from '../shared/schemas';
+import { PALETTE, TEXT_FONT_SIZES, type SizePreset } from '../shared/constants';
+import type { Annotation, Tool } from '../shared/schemas';
 import { TOOL_SHORTCUTS } from './keyboard';
-import type { EditorStore } from './store';
+import type { EditorState, EditorStore } from './store';
 
 export type SaveStatus =
   | { state: 'idle' }
@@ -109,10 +109,32 @@ export function SaveIndicator({ status }: { status: SaveStatus }) {
   );
 }
 
+type StyleTarget = 'text' | 'stroke' | 'none';
+
+/** Which size control applies: the mark being edited/selected wins over the active tool. */
+function styleTargetOf(state: EditorState, selected: Annotation | null): StyleTarget {
+  const type = state.editing?.draft.type ?? selected?.type ?? null;
+  if (type) return type === 'text' || type === 'sticky-note' ? 'text' : 'stroke';
+  if (state.tool === 'text' || state.tool === 'sticky-note') return 'text';
+  if (state.tool === 'eraser' || state.tool === 'select') return 'none';
+  return 'stroke';
+}
+
+/** Font size shown in the picker: the edited/selected note's size on screen, else the tool default. */
+function displayedFontSize(state: EditorState, selected: Annotation | null): number {
+  const note = state.editing?.draft ?? (selected && (selected.type === 'text' || selected.type === 'sticky-note') ? selected : null);
+  if (note?.style.fontSize) return Math.round(note.style.fontSize * state.viewScale);
+  return state.fontSize;
+}
+
 /** Drawing tools, style controls and undo/redo. */
 export function ToolControls({ store }: { store: EditorStore }) {
   const state = useSyncExternalStore(store.subscribe, store.getState);
-  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [open, setOpen] = useState<'color' | 'font' | null>(null);
+  const paletteOpen = open === 'color';
+  const selected = state.selectedId ? (state.annotations.find((a) => a.id === state.selectedId) ?? null) : null;
+  const target = styleTargetOf(state, selected);
+  const fontSize = displayedFontSize(state, selected);
 
   return (
     <>
@@ -137,7 +159,8 @@ export function ToolControls({ store }: { store: EditorStore }) {
             aria-label="Color"
             title="Color"
             aria-expanded={paletteOpen}
-            onClick={() => setPaletteOpen((open) => !open)}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setOpen((current) => (current === 'color' ? null : 'color'))}
           >
             <span className="don-swatch" style={{ background: state.color }} />
           </button>
@@ -151,9 +174,10 @@ export function ToolControls({ store }: { store: EditorStore }) {
                   aria-selected={state.color === color}
                   className={`don-swatch-btn ${state.color === color ? 'is-active' : ''}`}
                   title={color}
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => {
                     store.setColor(color);
-                    setPaletteOpen(false);
+                    setOpen(null);
                   }}
                 >
                   <span className="don-swatch" style={{ background: color }} />
@@ -162,19 +186,62 @@ export function ToolControls({ store }: { store: EditorStore }) {
             </div>
           ) : null}
         </div>
-        {SIZES.map(({ size, label, dot }) => (
-          <button
-            key={size}
-            type="button"
-            className={`don-btn don-size-btn ${state.size === size ? 'is-active' : ''}`}
-            aria-label={`${label} size`}
-            aria-pressed={state.size === size}
-            title={`${label} stroke / text`}
-            onClick={() => store.setSize(size)}
-          >
-            <span className="don-size-dot" style={{ width: dot, height: dot }} />
-          </button>
-        ))}
+        {/* Fixed-width slot so the toolbar does not shift when switching tools. */}
+        <span className="don-size-slot">
+          {target === 'text' ? (
+            <div className="don-popover-anchor">
+              <button
+                type="button"
+                className="don-btn don-font-btn"
+                aria-label={`Font size ${fontSize}`}
+                title="Font size"
+                aria-expanded={open === 'font'}
+                onClick={() => setOpen((current) => (current === 'font' ? null : 'font'))}
+                // Keep focus (and the caret) in the note being edited.
+                onMouseDown={(e) => e.preventDefault()}
+              >
+                <Type size={13} aria-hidden="true" />
+                <span>{fontSize}</span>
+              </button>
+              {open === 'font' ? (
+                <div className="don-popover don-font-list" role="listbox" aria-label="Font sizes">
+                  {TEXT_FONT_SIZES.map((size) => (
+                    <button
+                      key={size}
+                      type="button"
+                      role="option"
+                      aria-selected={fontSize === size}
+                      className={`don-font-option ${fontSize === size ? 'is-active' : ''}`}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        store.setFontSize(size);
+                        setOpen(null);
+                      }}
+                    >
+                      {size}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            // Dimmed (not hidden) when nothing they apply to is selected, so the toolbar keeps its layout.
+            SIZES.map(({ size, label, dot }) => (
+              <button
+                key={size}
+                type="button"
+                className={`don-btn don-size-btn ${state.size === size && target === 'stroke' ? 'is-active' : ''}`}
+                aria-label={`${label} stroke`}
+                aria-pressed={state.size === size}
+                title={`${label} stroke`}
+                disabled={target === 'none'}
+                onClick={() => store.setSize(size)}
+              >
+                <span className="don-size-dot" style={{ width: dot, height: dot }} />
+              </button>
+            ))
+          )}
+        </span>
       </div>
       <Divider />
       <div className="don-group" role="group" aria-label="History">
