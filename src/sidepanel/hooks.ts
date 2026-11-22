@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getCaptureTargets, onCaptureTargetsChange, type CaptureTargets } from '../database/capture-targets';
 import { getCaptureImages, listCaptures, listProjects } from '../database/repository';
 import {
   dataChangeSchema,
@@ -74,6 +75,23 @@ export function useLibrary(): Library {
   return { projects, captures, loading, error, reload };
 }
 
+/** Which project each Figma file's new captures go to (live). */
+export function useCaptureTargets(): CaptureTargets {
+  const [targets, setTargets] = useState<CaptureTargets>({});
+  useEffect(() => {
+    let cancelled = false;
+    void getCaptureTargets().then((t) => {
+      if (!cancelled) setTargets(t);
+    });
+    const off = onCaptureTargetsChange(setTargets);
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, []);
+  return targets;
+}
+
 export function useWindowId(): number | null {
   const [windowId, setWindowId] = useState<number | null>(null);
   useEffect(() => {
@@ -85,7 +103,7 @@ export function useWindowId(): number | null {
   return windowId;
 }
 
-const EMPTY_TAB: ActiveTabInfo = { tabId: null, url: null, supported: false, projectKey: null, overlay: null };
+const EMPTY_TAB: ActiveTabInfo = { tabId: null, url: null, supported: false, projectKey: null, fileName: null, overlay: null };
 
 /** What the active tab in this window is (as far as the extension may know). */
 export function useActiveTab(windowId: number | null): { info: ActiveTabInfo; refresh: () => void } {

@@ -1,12 +1,16 @@
 import { useMemo, useState } from 'react';
-import { Camera, Lock, Search, Settings, X } from 'lucide-react';
+import { Camera, FolderPlus, Lock, Search, Settings, X } from 'lucide-react';
 import { DEFAULT_SHORTCUTS } from '../shared/constants';
 import { errorMessage, sendToBackground } from '../shared/messages';
 import type { Capture, Project } from '../shared/schemas';
-import { InlineMessage } from './components/common';
+import { addProject, chooseCaptureTarget } from './actions';
+import { InlineMessage, NewProjectForm } from './components/common';
 import { ProjectSection } from './components/ProjectSection';
 import { SettingsView } from './components/SettingsView';
-import { useActiveTab, useLibrary, useWindowId } from './hooks';
+import { useActiveTab, useCaptureTargets, useLibrary, useWindowId } from './hooks';
+
+/** "New project…" entry of the "Save captures to" picker. */
+const NEW_PROJECT = '__new__';
 
 function matches(capture: Capture, project: Project | undefined, terms: string[]): boolean {
   if (terms.length === 0) return true;
@@ -27,7 +31,9 @@ export function App() {
   const windowId = useWindowId();
   const { info } = useActiveTab(windowId);
   const library = useLibrary();
+  const targets = useCaptureTargets();
   const [view, setView] = useState<'library' | 'settings'>('library');
+  const [creatingProject, setCreatingProject] = useState(false);
   const [query, setQuery] = useState('');
   const [tagFilter, setTagFilter] = useState<string[]>([]);
   const [notice, setNotice] = useState<{ tone: 'error' | 'info'; text: string } | null>(null);
@@ -40,9 +46,12 @@ export function App() {
     return [...tags.values()].sort((a, b) => a.localeCompare(b));
   }, [library.captures]);
 
-  const currentProject = info.projectKey
-    ? library.projects.find((p) => p.fileKey === info.projectKey) ?? null
-    : null;
+  // The Figma file's own project, and the one its new captures go to (the
+  // user's choice, else the file's own).
+  const fileProject = info.projectKey ? (library.projects.find((p) => p.fileKey === info.projectKey) ?? null) : null;
+  const chosenId = info.projectKey ? targets[info.projectKey] : undefined;
+  const chosenProject = chosenId ? (projectsById.get(chosenId) ?? null) : null;
+  const currentProject = info.supported ? (chosenProject ?? fileProject) : null;
 
   const groups = useMemo(() => {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -67,6 +76,16 @@ export function App() {
       })
       .map((project) => ({ project, captures: byProject.get(project.id) ?? [], total: totals.get(project.id) ?? 0 }));
   }, [library.captures, library.projects, projectsById, query, tagFilter, currentProject?.id]);
+
+  const report = (action: Promise<unknown>) =>
+    action.catch((error: unknown) => setNotice({ tone: 'error', text: errorMessage(error) }));
+
+  const createProject = (name: string, useForTab: boolean) =>
+    report(
+      addProject(name, useForTab ? info.projectKey : null).then(() => {
+        setCreatingProject(false);
+      }),
+    );
 
   const newCapture = async () => {
     if (windowId === null) return;
@@ -99,16 +118,44 @@ export function App() {
       <section className="dp-current" aria-label="Current tab">
         {info.supported ? (
           <>
-            <div className="dp-current-text">
-              <span className="dp-eyebrow">This tab</span>
-              <strong>{currentProject?.name ?? 'Figma file'}</strong>
-              {info.overlay && info.overlay.mode !== 'closed' ? (
-                <span className="dp-muted"> · overlay {info.overlay.mode === 'annotate' ? 'drawing' : info.overlay.mode}</span>
-              ) : null}
+            <div className="dp-current-row">
+              <div className="dp-current-text">
+                <span className="dp-eyebrow">
+                  This tab
+                  {info.overlay && info.overlay.mode !== 'closed'
+                    ? ` · overlay ${info.overlay.mode === 'annotate' ? 'drawing' : info.overlay.mode}`
+                    : ''}
+                </span>
+                <strong title={info.fileName ?? undefined}>{info.fileName ?? fileProject?.name ?? 'Figma file'}</strong>
+              </div>
+              <button type="button" className="dp-btn is-primary" disabled={capturing} onClick={() => void newCapture()}>
+                <Camera size={15} aria-hidden="true" /> {capturing ? 'Capturing…' : 'New capture'}
+              </button>
             </div>
-            <button type="button" className="dp-btn is-primary" disabled={capturing} onClick={() => void newCapture()}>
-              <Camera size={15} aria-hidden="true" /> {capturing ? 'Capturing…' : 'New capture'}
-            </button>
+            {info.projectKey ? (
+              <label className="dp-target">
+                <span>Save captures to</span>
+                <select
+                  value={chosenProject && chosenProject.id !== fileProject?.id ? chosenProject.id : ''}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (value === NEW_PROJECT) setCreatingProject(true);
+                    else void report(chooseCaptureTarget(info.projectKey!, value || null));
+                  }}
+                >
+                  <option value="">{fileProject?.name ?? info.fileName ?? 'This file'} (this file’s project)</option>
+                  {library.projects
+                    .filter((p) => p.id !== fileProject?.id)
+                    .sort((a, b) => a.name.localeCompare(b.name))
+                    .map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  <option value={NEW_PROJECT}>New project…</option>
+                </select>
+              </label>
+            ) : null}
           </>
         ) : (
           <p className="dp-muted dp-hint">
@@ -164,6 +211,22 @@ export function App() {
         </div>
       ) : null}
 
+      <div className="dp-library-head">
+        <span className="dp-eyebrow">Projects</span>
+        {!creatingProject ? (
+          <button type="button" className="dp-btn is-small" onClick={() => setCreatingProject(true)}>
+            <FolderPlus size={14} aria-hidden="true" /> New project
+          </button>
+        ) : null}
+      </div>
+      {creatingProject ? (
+        <NewProjectForm
+          fileName={info.projectKey ? (info.fileName ?? 'this file') : null}
+          onCreate={(name, useForTab) => void createProject(name, useForTab)}
+          onCancel={() => setCreatingProject(false)}
+        />
+      ) : null}
+
       <main className="dp-library">
         {library.error ? <InlineMessage tone="error">Could not load notes: {library.error}</InlineMessage> : null}
         {!library.loading && library.captures.length === 0 && library.projects.length === 0 ? (
@@ -186,6 +249,12 @@ export function App() {
             captures={captures}
             totalCaptures={total}
             isCurrent={project.id === currentProject?.id}
+            onSaveHere={
+              info.projectKey && project.id !== currentProject?.id
+                ? () => void report(chooseCaptureTarget(info.projectKey!, project.id === fileProject?.id ? null : project.id))
+                : null
+            }
+            projects={library.projects}
             windowId={windowId}
             knownTags={allTags}
             onPageCaptureId={info.overlay?.mode !== 'closed' ? (info.overlay?.captureId ?? null) : null}

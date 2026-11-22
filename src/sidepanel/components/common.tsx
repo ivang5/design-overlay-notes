@@ -309,3 +309,58 @@ export function formatBytes(bytes: number | null): string {
 export function formatDateTime(timestamp: number): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp));
 }
+
+/**
+ * Inline "new project" form. With `fileName` (a Figma file is open in this
+ * tab), offers to save that file's new captures in the new project.
+ */
+export function NewProjectForm({
+  fileName,
+  onCreate,
+  onCancel,
+}: {
+  fileName: string | null;
+  onCreate: (name: string, useForTab: boolean) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [useForTab, setUseForTab] = useState(true);
+  return (
+    <form
+      className="dp-new-project"
+      aria-label="New project"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const trimmed = name.trim();
+        if (trimmed) onCreate(trimmed, fileName !== null && useForTab);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') onCancel();
+      }}
+    >
+      <input
+        className="dp-input"
+        autoFocus
+        value={name}
+        maxLength={300}
+        placeholder="Project name, e.g. Checkout redesign"
+        aria-label="Project name"
+        onChange={(e) => setName(e.target.value)}
+      />
+      {fileName !== null ? (
+        <label className="dp-check">
+          <input type="checkbox" checked={useForTab} onChange={(e) => setUseForTab(e.target.checked)} />
+          <span>Save new captures from “{fileName}” here</span>
+        </label>
+      ) : null}
+      <div className="dp-row">
+        <button type="submit" className="dp-btn is-primary is-small" disabled={!name.trim()}>
+          Create project
+        </button>
+        <button type="button" className="dp-btn is-small" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}

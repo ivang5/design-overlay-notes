@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { figmaWheelZoom } from '../../src/content/view-tracker';
+import { figmaWheelPan, figmaWheelZoom } from '../../src/content/view-tracker';
 import { decodeRegionGrid, encodeRegionGrid, regionGridCoverage } from '../../src/shared/region-grid';
 import {
   IDENTITY_TRANSFORM,
@@ -50,6 +50,17 @@ describe('Ctrl+wheel zoom prediction', () => {
       expect(Math.abs(figmaWheelZoom(dy) / factor - 1)).toBeLessThan(0.004);
     }
     expect(figmaWheelZoom(0)).toBe(1);
+  });
+});
+
+describe('wheel pan prediction', () => {
+  it('caps the step length like Figma, not each axis', () => {
+    // Measured on Figma: (100, 100) moves (85, 85); shorter steps move 1:1.
+    const diagonal = figmaWheelPan(100, 100);
+    expect(diagonal.dx).toBeCloseTo(84.85, 1);
+    expect(diagonal.dy).toBeCloseTo(84.85, 1);
+    expect(figmaWheelPan(60, 80)).toEqual({ dx: 60, dy: 80 });
+    expect(figmaWheelPan(0, -300)).toEqual({ dx: 0, dy: -120 });
   });
 });
 

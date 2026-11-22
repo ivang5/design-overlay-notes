@@ -56,6 +56,29 @@ export function switchFigmaPage(name: string): boolean {
   return true;
 }
 
+/**
+ * Ask Figma to "Zoom to fit" (Shift+1: the whole page in view) with a
+ * synthetic key press on its keyboard focus target; Figma handles it like the
+ * shortcut. Returns false when there is nothing to send it to.
+ */
+export function requestZoomToFit(): boolean {
+  const target = document.querySelector<HTMLElement>('input.focus-target') ?? findFigmaCanvas();
+  if (!target) return false;
+  const init: KeyboardEventInit & { keyCode: number; which: number } = {
+    key: '!',
+    code: 'Digit1',
+    keyCode: 49,
+    which: 49,
+    shiftKey: true,
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+  };
+  target.dispatchEvent(new KeyboardEvent('keydown', init));
+  target.dispatchEvent(new KeyboardEvent('keyup', init));
+  return true;
+}
+
 /** Figma has rendered its canvas and toolbar (not still loading the file). */
 export function isFigmaReady(): boolean {
   return findFigmaCanvas() !== null && readFigmaZoom() !== null;

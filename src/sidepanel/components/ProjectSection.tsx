@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight, Pencil, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, FolderInput, Pencil, Trash2 } from 'lucide-react';
 import { errorMessage } from '../../shared/messages';
 import type { Capture, Project } from '../../shared/schemas';
 import { removeProject, saveProjectName } from '../actions';
@@ -10,7 +10,11 @@ interface Props {
   project: Project;
   captures: Capture[];
   totalCaptures: number;
+  /** New captures from the current Figma tab go to this project. */
   isCurrent: boolean;
+  /** Make this project receive the current tab's new captures (null: not applicable). */
+  onSaveHere: (() => void) | null;
+  projects: Project[];
   windowId: number | null;
   knownTags: string[];
   onPageCaptureId: string | null;
@@ -21,6 +25,8 @@ export function ProjectSection({
   captures,
   totalCaptures,
   isCurrent,
+  onSaveHere,
+  projects,
   windowId,
   knownTags,
   onPageCaptureId,
@@ -76,11 +82,16 @@ export function ProjectSection({
             {project.name}
           </h2>
         )}
-        {isCurrent ? <span className="dp-pill">This tab</span> : null}
+        {isCurrent ? (
+          <span className="dp-pill" title="New captures from the current Figma tab are saved here">
+            Saving here
+          </span>
+        ) : null}
         <span className="dp-count">{totalCaptures}</span>
         <ActionMenu
           label="Project actions"
           items={[
+            ...(onSaveHere ? [{ label: 'Save new captures from this tab here', icon: FolderInput, onSelect: onSaveHere }] : []),
             { label: 'Rename project', icon: Pencil, onSelect: () => setRenaming(true) },
             { label: 'Delete project…', icon: Trash2, tone: 'danger', onSelect: () => setConfirmDelete(true) },
           ]}
@@ -103,11 +114,18 @@ export function ProjectSection({
       ) : null}
       {open ? (
         <div className="dp-card-list">
-          {captures.length === 0 ? <p className="dp-empty-small">No captures match.</p> : null}
+          {captures.length === 0 ? (
+            <p className="dp-empty-small">
+              {totalCaptures === 0
+                ? 'No captures yet. Choose this project under “Save captures to”, or move captures here from their ⋯ menu.'
+                : 'No captures match.'}
+            </p>
+          ) : null}
           {captures.map((capture) => (
             <CaptureCard
               key={capture.id}
               capture={capture}
+              projects={projects}
               windowId={windowId}
               knownTags={knownTags}
               isOnPage={capture.id === onPageCaptureId}

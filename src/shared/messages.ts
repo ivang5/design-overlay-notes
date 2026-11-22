@@ -78,6 +78,8 @@ export const contentRequestSchema = z.discriminatedUnion('type', [
     scaleTolerance: z.number().min(0).max(1).nullable(),
     /** The seed's scale comes from an exact zoom prediction. */
     lockScale: z.boolean(),
+    /** Allow a full search away from the seed (otherwise refine near it only). */
+    allowSearch: z.boolean(),
     /** Live viewport cells showing the Figma canvas. */
     region: regionGridSchema.nullable(),
     /** Live areas to ignore (our toolbar, banners), CSS px. */
@@ -101,7 +103,8 @@ export type ViewAlignResult =
 
 export interface ContentResponses {
   OVERLAY_STATE: null;
-  CAPTURE_CREATE: { capture: Capture };
+  /** `savedIn`: the project's name when the capture went to a project chosen for this file. */
+  CAPTURE_CREATE: { capture: Capture; savedIn: string | null };
   CAPTURE_LOAD: {
     capture: Capture;
     annotations: Annotation[];
@@ -156,6 +159,8 @@ export interface ActiveTabInfo {
   url: string | null;
   supported: boolean;
   projectKey: string | null;
+  /** Figma file name from the tab title (null without access). */
+  fileName: string | null;
   overlay: { captureId: string | null; mode: OverlayMode } | null;
 }
 

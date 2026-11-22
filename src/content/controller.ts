@@ -39,8 +39,17 @@ import {
   type TabResponses,
 } from '../shared/messages';
 import type { Capture, Settings, SettingsPatch, ViewportMetadata } from '../shared/schemas';
-import { IDENTITY_TRANSFORM, transformDistance, zoomViewAbout, type ViewTransform } from '../shared/view-transform';
-import { computeRegionGrid, findFigmaCanvas, isFigmaReady, readFigmaPage, readFigmaZoom, switchFigmaPage } from './figma-dom';
+import { IDENTITY_TRANSFORM, transformDistance, type ViewTransform } from '../shared/view-transform';
+import { planFlight, smoothstep } from './flight';
+import {
+  computeRegionGrid,
+  findFigmaCanvas,
+  isFigmaReady,
+  readFigmaPage,
+  readFigmaZoom,
+  requestZoomToFit,
+  switchFigmaPage,
+} from './figma-dom';
 import { createOverlayHost, waitForPaint, type OverlayHost } from './overlay-host';
 import { OverlayApp } from './OverlayApp';
 import { ViewTracker, type ViewState } from './view-tracker';
@@ -74,6 +83,8 @@ export interface OverlayUiState {
   followView: boolean;
   /** Following, but every mark is outside the visible canvas (offer to go back to them). */
   marksOffscreen: boolean;
+  /** The capture was taken on another Figma page than the one shown (its name). */
+  otherPage: string | null;
   /** Global shortcuts as currently configured in Chrome (for tooltips). */
   shortcuts: Shortcuts;
 }
@@ -168,6 +179,21 @@ function captureCanvasCenter(capture: Capture): { x: number; y: number } {
   return { x: capture.viewportCssWidth / 2, y: capture.viewportCssHeight / 2 };
 }
 
+/** Longest pan per synthetic wheel step (Figma caps a step's length at 120 px). */
+const FLIGHT_PAN_STEP = 100;
+/** Largest Ctrl+wheel delta per synthetic zoom step. */
+const FLIGHT_ZOOM_STEP = 8;
+
+/**
+ * Where synthetic wheel input is aimed: the canvas centre in whole pixels.
+ * The browser rounds a wheel event's clientX/Y, and Figma zooms around that
+ * rounded point, so the flight must plan with the same point.
+ */
+function wheelOrigin(canvas: HTMLCanvasElement): { x: number; y: number } {
+  const rect = canvas.getBoundingClientRect();
+  return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+}
+
 /** Dispatch a synthetic wheel event on Figma's canvas (Figma handles these like real ones). */
 function dispatchCanvasWheel(
   canvas: HTMLCanvasElement,
@@ -220,6 +246,7 @@ export class OverlayController {
   /** Where the last "go to captured view" aimed, until a check confirms we got there. */
   private flightTarget: ViewTransform | null = null;
   private flightCorrections = 0;
+  private lastLandingRecovery = 0;
   private lastUrl = location.href;
 
   constructor() {
@@ -236,6 +263,7 @@ export class OverlayController {
       view: { transform: IDENTITY_TRANSFORM, status: 'off' },
       followView: true,
       marksOffscreen: false,
+      otherPage: null,
       shortcuts: { ...DEFAULT_SHORTCUTS },
     };
 
@@ -256,6 +284,8 @@ export class OverlayController {
       keysReachFigma: () => this.ui.mode !== 'annotate',
       followEnabled: () => this.ui.followView && this.alive,
       zoomCanvas: (factor) => this.zoomCanvas(factor),
+      zoomToFit: () => this.zoomToFit(),
+      onLandingUnconfirmed: () => this.recoverLanding(),
       captureZoom: () => this.ui.capture?.figmaZoom ?? null,
       captureSize: () =>
         this.ui.capture ? { width: this.ui.capture.viewportCssWidth, height: this.ui.capture.viewportCssHeight } : null,
@@ -277,6 +307,7 @@ export class OverlayController {
           scaleHint: input.scaleHint,
           scaleTolerance: input.scaleTolerance,
           lockScale: input.lockScale,
+          allowSearch: input.allowSearch,
           region: input.region,
           exclude: this.ownUiRects(),
           viewport: { width: window.innerWidth, height: window.innerHeight },
@@ -446,7 +477,7 @@ export class OverlayController {
       this.host.setRendered(false);
       await waitForPaint();
       const metadata = readViewportMetadata(this.host.container);
-      const { capture } = await this.send({ type: 'CAPTURE_CREATE', metadata });
+      const { capture, savedIn } = await this.send({ type: 'CAPTURE_CREATE', metadata });
       this.store.load(capture.id, []);
       // A new capture is exactly where the view is now (identity): remember that.
       if (this.ui.followView && findFigmaCanvas()) this.tracker.reset('following', IDENTITY_TRANSFORM, capture.id, true);
@@ -456,19 +487,23 @@ export class OverlayController {
       this.fileChangeHandledFor = null;
       this.clearReference();
       this.setUi({ capture, saveStatus: { state: 'idle' } });
+      const where = savedIn ? ` Saved in “${savedIn}”.` : '';
       if (!this.hasShownCaptureTip) {
         this.hasShownCaptureTip = true;
         this.setNotice(
           {
             id: 'info',
             tone: 'info',
-            text: this.ui.view.status === 'off'
-              ? 'Captured this view. Marks belong to this capture — after panning or zooming Figma, take a new capture.'
-              : 'Captured this view. Your marks stay attached to the design when you scroll or zoom Figma.',
+            text:
+              (this.ui.view.status === 'off'
+                ? 'Captured this view. Marks belong to this capture — after panning or zooming Figma, take a new capture.'
+                : 'Captured this view. Your marks stay attached to the design when you scroll or zoom Figma.') + where,
             actions: [],
           },
           7_000,
         );
+      } else if (savedIn) {
+        this.setNotice({ id: 'info', tone: 'info', text: `Captured.${where}`, actions: [] }, 3_000);
       } else if (this.ui.notice?.id !== 'error') {
         this.setNotice(null);
       }
@@ -583,15 +618,33 @@ export class OverlayController {
   private async zoomCanvas(factor: number): Promise<void> {
     const canvas = findFigmaCanvas();
     if (!canvas || !(factor > 0)) return;
-    const rect = canvas.getBoundingClientRect();
-    const c = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    const c = wheelOrigin(canvas);
     let deltaY = -Math.log(factor) / 0.005;
     while (Math.abs(deltaY) > 1e-3) {
-      const d = Math.max(-30, Math.min(30, deltaY));
+      const d = Math.max(-FLIGHT_ZOOM_STEP, Math.min(FLIGHT_ZOOM_STEP, deltaY));
       dispatchCanvasWheel(canvas, { deltaY: d, ctrlKey: true, clientX: c.x, clientY: c.y });
       deltaY -= d;
     }
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }
+
+  /** Figma's "Zoom to fit"; waits for its zoom label to settle (Figma may animate). */
+  private async zoomToFit(): Promise<number | null> {
+    const before = readFigmaZoom();
+    if (!requestZoomToFit()) return null;
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    let last = before;
+    let stable = 0;
+    for (let waited = 0; waited < 2_000; waited += 100) {
+      await sleep(100);
+      const now = readFigmaZoom();
+      // Settled: unchanged for 2 readings (and changed at all, or given time to).
+      stable = now !== null && now === last && (now !== before || waited >= 500) ? stable + 1 : 0;
+      last = now;
+      if (stable >= 2) break;
+    }
+    await sleep(200); // let Figma draw the page at its new zoom
+    return readFigmaZoom();
   }
 
   private unloadDeletedCapture(): void {
@@ -647,6 +700,7 @@ export class OverlayController {
     const previous = this.ui.view;
     this.setUi({ view });
     this.updateMarksOffscreen();
+    this.updateOtherPage();
     if (__E2E__) document.documentElement.dataset.donView = JSON.stringify({ ...view.transform, status: view.status });
     this.store.setViewScale(view.transform.s);
     if (view.status === previous.status) return;
@@ -675,8 +729,13 @@ export class OverlayController {
   /**
    * Scroll and zoom Figma back to the captured view: the captured area at its
    * captured zoom, centred in today's canvas. Done with the same wheel input a
-   * user would give (Figma's measured response), animated over a few frames;
-   * the tracker follows each step and confirms the result afterwards.
+   * user would give, animated over a few frames; the tracker follows each step
+   * and confirms the result afterwards.
+   *
+   * First a pan (Figma pans exactly 1:1) brings the spot that ends up in the
+   * middle under the canvas centre, then a zoom around that centre. Zooming
+   * while the area is still far off-screen would magnify any small error of
+   * the zoom model into a large position error.
    */
   goToCapturedView(correction = false): void {
     const capture = this.ui.capture;
@@ -684,10 +743,18 @@ export class OverlayController {
     if (!capture || !canvas || this.ui.view.status !== 'following') return;
     if (this.flight !== null) cancelAnimationFrame(this.flight);
     if (!correction) this.flightCorrections = 0;
-    const rect = canvas.getBoundingClientRect();
-    const c = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    if (!correction && this.tracker.needsOverview()) {
+      // Far away, or the tracked position became approximate: find the notes
+      // on the whole page first, then fly a short, confirmed trip to them.
+      this.pendingGoToView = true;
+      void this.tracker.locate({ explore: true, overview: true }).then((found) => {
+        if (!found) this.pendingGoToView = false;
+      });
+      return;
+    }
+    const c = wheelOrigin(canvas);
     const capturedCenter = captureCanvasCenter(capture);
-    const start = this.tracker.getLive();
+    const start = this.tracker.getSettled();
     let target: ViewTransform = { s: 1, tx: c.x - capturedCenter.x, ty: c.y - capturedCenter.y };
     // Same window layout as when captured: restore the exact captured view
     // (the centre estimate above is only accurate to a region-grid cell).
@@ -696,39 +763,64 @@ export class OverlayController {
       Math.abs(window.innerHeight - capture.viewportCssHeight) < 2 &&
       Math.hypot(target.tx, target.ty) < (capture.regionGrid?.cell ?? 16);
     if (sameLayout) target = { s: 1, tx: 0, ty: 0 };
-    // A short hop for a final correction, a visible glide otherwise.
-    const frames = correction ? 3 : 14;
+    const plan = planFlight(start, target, c, correction);
     let frame = 0;
-    let current = start;
+    let panned = { x: 0, y: 0 };
+    let zoomed = 0; // ln of the zoom applied so far
     const step = () => {
       frame++;
-      const k = 1 - (1 - frame / frames) ** 3; // ease-out
-      const s = Math.exp(Math.log(start.s) + (Math.log(target.s) - Math.log(start.s)) * k);
-      // Zoom part: Figma's Ctrl+wheel is linear (ln factor = −0.005·Δ) for |Δ| ≤ 30.
-      let deltaY = -Math.log(s / current.s) / 0.005;
-      while (Math.abs(deltaY) > 1e-3) {
-        const d = Math.max(-30, Math.min(30, deltaY));
-        dispatchCanvasWheel(canvas, { deltaY: d, ctrlKey: true, clientX: c.x, clientY: c.y });
-        current = zoomViewAbout(current, Math.exp(-0.005 * d), c.x, c.y);
-        deltaY -= d;
+      if (frame <= plan.panFrames) {
+        const k = smoothstep(frame / plan.panFrames);
+        const dx = plan.pan.x * k - panned.x;
+        const dy = plan.pan.y * k - panned.y;
+        panned = { x: plan.pan.x * k, y: plan.pan.y * k };
+        // Figma caps each wheel step's length (not each axis): keep steps well under it.
+        const steps = Math.ceil(Math.hypot(dx, dy) / FLIGHT_PAN_STEP);
+        for (let i = 0; i < steps; i++) {
+          dispatchCanvasWheel(canvas, { deltaX: -dx / steps, deltaY: -dy / steps, clientX: c.x, clientY: c.y });
+        }
+      } else {
+        const k = 1 - (1 - (frame - plan.panFrames) / plan.zoomFrames) ** 3; // ease-out
+        const ln = plan.lnZoom * k - zoomed;
+        zoomed = plan.lnZoom * k;
+        // Small steps, where Figma's response is closest to ln factor = −0.005·Δ.
+        let deltaY = -ln / 0.005;
+        while (Math.abs(deltaY) > 1e-3) {
+          const d = Math.max(-FLIGHT_ZOOM_STEP, Math.min(FLIGHT_ZOOM_STEP, deltaY));
+          dispatchCanvasWheel(canvas, { deltaY: d, ctrlKey: true, clientX: c.x, clientY: c.y });
+          deltaY -= d;
+        }
       }
-      // Pan part: Figma pans by −Δ, at most 120 px per event.
-      const wantTx = frame === frames ? target.tx : start.tx + (target.tx - start.tx) * k;
-      const wantTy = frame === frames ? target.ty : start.ty + (target.ty - start.ty) * k;
-      let dx = wantTx - current.tx;
-      let dy = wantTy - current.ty;
-      while (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
-        const px = Math.max(-100, Math.min(100, dx));
-        const py = Math.max(-100, Math.min(100, dy));
-        dispatchCanvasWheel(canvas, { deltaX: -px, deltaY: -py, clientX: c.x, clientY: c.y });
-        current = { s: current.s, tx: current.tx + px, ty: current.ty + py };
-        dx -= px;
-        dy -= py;
+      const done = frame >= plan.panFrames + plan.zoomFrames;
+      this.flight = done ? null : requestAnimationFrame(step);
+      if (done) {
+        this.flightTarget = target;
+        if (!correction) this.tracker.expectLanding();
       }
-      this.flight = frame < frames ? requestAnimationFrame(step) : null;
-      if (this.flight === null) this.flightTarget = target;
     };
+    if (plan.panFrames + plan.zoomFrames === 0) {
+      // Already there by the prediction: make sure it really is.
+      this.flightTarget = target;
+      this.tracker.expectLanding();
+      return;
+    }
     this.flight = requestAnimationFrame(step);
+  }
+
+  /**
+   * The check after a flight did not find the notes where we landed: the
+   * position we flew from was off (input that could not be followed exactly).
+   * Find them for real (this view, zoomed out, then the whole page) and fly
+   * again from the found position. At most once per 8 s, so it cannot loop.
+   */
+  private recoverLanding(): void {
+    if (!this.ui.capture || Date.now() - this.lastLandingRecovery < 8_000) return;
+    this.lastLandingRecovery = Date.now();
+    this.flightTarget = null;
+    this.pendingGoToView = true;
+    void this.tracker.locate({ explore: true }).then((found) => {
+      if (!found) this.pendingGoToView = false;
+    });
   }
 
   /**
@@ -745,6 +837,14 @@ export class OverlayController {
       this.flightCorrections++;
       requestAnimationFrame(() => this.goToCapturedView(true));
     }
+  }
+
+  /** Is Figma showing another page than the one the capture was taken on? */
+  private updateOtherPage(): void {
+    const capturedOn = this.ui.capture?.figmaPage ?? null;
+    const shown = readFigmaPage();
+    const otherPage = capturedOn && shown && shown !== capturedOn ? capturedOn : null;
+    if (otherPage !== this.ui.otherPage) this.setUi({ otherPage });
   }
 
   /** Are all marks outside the visible canvas under the committed view? */
@@ -889,6 +989,7 @@ export class OverlayController {
       this.lastUrl = location.href;
       // Same file, different page/selection: the canvas may show something else now.
       this.tracker.invalidate();
+      this.updateOtherPage();
       // Keep the service worker's tab → file map current (used to reuse tabs).
       if (projectKeyFromUrl(location.href) !== previousKey) this.reportState();
     }

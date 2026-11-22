@@ -577,6 +577,8 @@ export interface AlignOptions {
   scaleTolerance?: number | null;
   /** The seed's scale is exact (trusted zoom prediction): refine the position only first. */
   lockScale?: boolean;
+  /** Search the whole view when refining near the seed fails (default true). */
+  allowSearch?: boolean;
   /** Accept a match only above this correlation. */
   minNcc?: number;
 }
@@ -710,6 +712,7 @@ export function align(refP: Pyramid, liveP: Pyramid, options: AlignOptions = {})
     if (coarseFit && coarseFit.ncc >= minNcc) consider(refine(refP, liveP, coarseFit.transform, mid1, 0), 'refine');
     lap('seed');
     if (best && (best as AlignResult).confident) return best;
+    if (options.allowSearch === false) return best;
   }
 
   const hint = options.scaleHint ?? options.seed?.s ?? null;

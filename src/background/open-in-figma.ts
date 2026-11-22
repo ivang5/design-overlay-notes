@@ -12,7 +12,7 @@ import { hasFigmaAccess } from '../shared/figma-access';
 import { parseFigmaUrl, projectKeyFor } from '../shared/figma-url';
 import type { OpenInFigmaResult } from '../shared/messages';
 import { prewarmReference } from './align-service';
-import { tabsWithProject } from './overlay-registry';
+import { removeTab, tabsWithProject } from './overlay-registry';
 import { ensureOverlay, pingTab, sendToTab } from './tab-bridge';
 
 const PENDING_KEY = 'pendingShow';
@@ -82,7 +82,18 @@ export async function openInFigma(windowId: number, captureId: string): Promise<
   let tab: chrome.tabs.Tab | undefined;
   for (const id of await tabsWithProject(key)) {
     const candidate = await chrome.tabs.get(id).catch(() => undefined);
-    if (candidate && (!tab || candidate.windowId === windowId)) tab = candidate;
+    if (!candidate) continue;
+    // The tab may have left the file since (nobody tells the registry): trust
+    // its URL when Chrome shows it to us, else whether our overlay still answers.
+    const parsed = candidate.url ? parseFigmaUrl(candidate.url) : null;
+    const stillThere = candidate.url
+      ? parsed !== null && projectKeyFor(parsed) === key
+      : (await pingTab(id, 300)) !== null;
+    if (!stillThere) {
+      await removeTab(id);
+      continue;
+    }
+    if (!tab || candidate.windowId === windowId) tab = candidate;
   }
   if (!tab) {
     tab = (await chrome.tabs.query({ windowId })).find((t) => {

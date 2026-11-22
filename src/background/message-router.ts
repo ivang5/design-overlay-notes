@@ -15,7 +15,7 @@ import {
   type DataChange,
   type PageRequest,
 } from '../shared/messages';
-import { getAnnotations, getCapture, getCaptureImages, replaceAnnotations } from '../database/repository';
+import { getAnnotations, getCapture, getCaptureImages, getProject, replaceAnnotations } from '../database/repository';
 import { getActiveTab, newCaptureOnTab, NO_ACCESS_MESSAGE, showCaptureOnTab } from './activation';
 import { alignView } from './align-service';
 import { openInFigma } from './open-in-figma';
@@ -23,7 +23,7 @@ import { captureTab } from './capture-service';
 import { lastView, setTabOverlay, tabsShowing } from './overlay-registry';
 import { getSettings, updateSettings } from '../database/settings';
 import { pingTab, sendToTabQuietly } from './tab-bridge';
-import { parseFigmaUrl, projectKeyFor } from '../shared/figma-url';
+import { cleanFigmaTitle, parseFigmaUrl, projectKeyFor } from '../shared/figma-url';
 
 type Sender = chrome.runtime.MessageSender;
 type Respond = (response: unknown) => void;
@@ -88,9 +88,13 @@ async function handleContentRequest(request: ContentRequest, sender: Sender): Pr
       if (!tab.active) throw new Error('Switch to this tab before taking a capture');
       const capture = await captureTab(tab.windowId, pageUrl, request.metadata);
       const parsedUrl = parseFigmaUrl(pageUrl);
-      await setTabOverlay(tabId, { captureId: capture.id, mode: 'annotate' }, parsedUrl ? projectKeyFor(parsedUrl) : null);
+      const fileKey = parsedUrl ? projectKeyFor(parsedUrl) : null;
+      await setTabOverlay(tabId, { captureId: capture.id, mode: 'annotate' }, fileKey);
       broadcastToPages({ scope: 'captures', captureId: capture.id, projectId: capture.projectId });
-      return { capture };
+      const project = await getProject(capture.projectId);
+      // Saved somewhere else than the file's own project (the user's choice): say where.
+      const savedIn = project && fileKey && project.fileKey !== fileKey ? project.name : null;
+      return { capture, savedIn };
     }
 
     case 'CAPTURE_LOAD': {
@@ -171,6 +175,7 @@ async function handlePageRequest(request: PageRequest): Promise<unknown> {
         url,
         supported: parsed !== null,
         projectKey: parsed ? projectKeyFor(parsed) : null,
+        fileName: parsed ? (cleanFigmaTitle(tab?.title ?? null) ?? parsed.slugName ?? null) : null,
         overlay,
       };
     }

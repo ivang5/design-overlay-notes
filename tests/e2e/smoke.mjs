@@ -306,6 +306,48 @@ try {
   assert.equal(restored.mode, 'browse');
   log('a saved capture can be shown over the live page from the manager');
 
+  // --- projects: make your own, send a file's new captures to it, move captures ----
+  // The Figma-like tab stays the active tab; the manager (another tab) is driven in the background.
+  await page.bringToFront();
+  const target = panel.locator('.dp-target select');
+  await target.waitFor({ timeout: 8_000 });
+  await panel.getByRole('button', { name: 'New project' }).click();
+  await panel.getByRole('textbox', { name: 'Project name' }).fill('Checkout redesign');
+  assert.equal(await panel.getByRole('checkbox', { name: /Save new captures from “Fixture File” here/ }).isChecked(), true);
+  await panel.getByRole('button', { name: 'Create project' }).click();
+  const ownProject = await waitFor(
+    async () => (await readStore('projects')).find((p) => p.name === 'Checkout redesign'),
+    'new project stored',
+  );
+  assert.equal(ownProject.fileKey, null, 'a project of your own is not tied to a file');
+  await waitFor(async () => (await target.evaluate((el) => el.selectedOptions[0]?.textContent)) === 'Checkout redesign', 'picker shows the new project');
+  const routed = await panel.evaluate((windowId) => chrome.runtime.sendMessage({ type: 'PANEL_NEW_CAPTURE', windowId }), windowId);
+  assert.ok(routed.ok && routed.data.captureId, 'new capture from the manager');
+  const routedCapture = await waitFor(
+    async () => (await readStore('captures')).find((c) => c.id === routed.data.captureId),
+    'routed capture stored',
+  );
+  assert.equal(routedCapture.projectId, ownProject.id, 'new capture saved in the chosen project');
+  log('a new project can be made in the manager; the file’s new captures then go to it');
+
+  const ownSection = panel.locator('section.dp-project', { has: panel.getByRole('heading', { name: 'Checkout redesign' }) });
+  await ownSection.locator('article.dp-card').first().waitFor();
+  const movedCard = ownSection.locator('article.dp-card').first();
+  await movedCard.getByRole('button', { name: 'More actions' }).click();
+  await movedCard.getByRole('menuitem', { name: /Move to project/ }).click();
+  await movedCard.getByRole('combobox', { name: 'Move to project' }).selectOption({ label: 'Fixture File' });
+  await movedCard.getByRole('button', { name: 'Move', exact: true }).click();
+  await waitFor(
+    async () => (await readStore('captures')).find((c) => c.id === routedCapture.id)?.projectId === project.id,
+    'capture moved back to the file’s project',
+  );
+  await target.selectOption('');
+  await waitFor(
+    async () => Object.keys((await sw.evaluate(() => chrome.storage.local.get('captureTargets'))).captureTargets ?? {}).length === 0,
+    'file’s own project chosen again',
+  );
+  log('captures move between projects; the file’s own project can be chosen again');
+
   // --- backup export -----------------------------------------------------------
   await panel.bringToFront();
   await panel.getByRole('button', { name: /Settings, backup and privacy/ }).click();

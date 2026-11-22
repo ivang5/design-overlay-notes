@@ -167,6 +167,7 @@ export async function alignView(tab: chrome.tabs.Tab, request: AlignRequest): Pr
     scaleHint: request.scaleHint,
     scaleTolerance: request.scaleTolerance,
     lockScale: request.lockScale,
+    allowSearch: request.allowSearch,
   });
   if (__E2E__) {
     // Test builds keep a short log the e2e test can read.

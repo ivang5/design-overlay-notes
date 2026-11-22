@@ -8,6 +8,22 @@
   overflow: hidden;
 }
 
+/* Clips marks to Figma's canvas once the view moved (see OverlayApp). */
+.don-canvas-clip {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.don-canvas-clip.is-clipped {
+  -webkit-mask: linear-gradient(#000 0 0) no-repeat;
+  mask: linear-gradient(#000 0 0) no-repeat;
+  -webkit-mask-position: var(--don-clip-pos);
+  mask-position: var(--don-clip-pos);
+  -webkit-mask-size: var(--don-clip-size);
+  mask-size: var(--don-clip-size);
+}
+
 .don-live-canvas {
   position: absolute;
   inset: 0;

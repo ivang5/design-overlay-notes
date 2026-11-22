@@ -60,6 +60,41 @@ export async function ensureProject(projectKey: string | null, name: string): Pr
   return project;
 }
 
+/**
+ * A project the user made (e.g. one per feature). Not tied to a Figma file:
+ * captures get here when a file's new captures are routed to it, or when moved.
+ */
+export async function createProject(name: string): Promise<Project> {
+  const now = Date.now();
+  const project: Project = {
+    id: createId(),
+    name: name.trim().slice(0, 300) || 'New project',
+    platform: 'figma',
+    fileKey: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const db = await getDb();
+  await db.put('projects', project);
+  return project;
+}
+
+/** Move a capture (with its notes) to another project. */
+export async function moveCapture(captureId: string, projectId: string): Promise<Capture> {
+  const db = await getDb();
+  const tx = db.transaction(['projects', 'captures'], 'readwrite');
+  const capture = await tx.objectStore('captures').get(captureId);
+  if (!capture) throw new NotFoundError('Capture not found');
+  const target = await tx.objectStore('projects').get(projectId);
+  if (!target) throw new NotFoundError('Project not found');
+  const now = Date.now();
+  const moved: Capture = { ...capture, projectId, updatedAt: now };
+  await tx.objectStore('captures').put(moved);
+  await tx.objectStore('projects').put({ ...target, updatedAt: now });
+  await tx.done;
+  return moved;
+}
+
 export async function renameProject(id: string, name: string): Promise<Project> {
   const db = await getDb();
   const tx = db.transaction('projects', 'readwrite');
@@ -109,6 +144,8 @@ export interface NewCaptureInput {
   pageUrl: string;
   projectKey: string | null;
   projectName: string;
+  /** Put the capture in this project (the user's choice for the file) instead of the file's own. */
+  projectId?: string | null;
   screenshot: Blob;
   thumbnail: Blob | null;
   screenshotPixelWidth: number;
@@ -123,7 +160,8 @@ export function defaultCaptureTitle(timestamp: number): string {
 }
 
 export async function createCapture(input: NewCaptureInput): Promise<Capture> {
-  const project = await ensureProject(input.projectKey, input.projectName);
+  const chosen = input.projectId ? await getProject(input.projectId) : undefined;
+  const project = chosen ?? (await ensureProject(input.projectKey, input.projectName));
   const now = input.now ?? Date.now();
   const m = input.metadata;
   const capture: Capture = {

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { closeDbForTests } from '../../src/database/db';
 import {
   createCapture,
+  createProject,
   deleteAllData,
   deleteCapture,
   deleteProject,
@@ -14,6 +15,7 @@ import {
   getCaptureImages,
   listCaptures,
   listProjects,
+  moveCapture,
   replaceAnnotations,
   updateCaptureMeta,
   type NewCaptureInput,
@@ -84,6 +86,28 @@ describe('repository', () => {
     const other = await createCapture(input({ projectKey: 'ZzZzZz1234567890', projectName: 'Other' }));
     expect(other.projectId).not.toBe(a.projectId);
     expect(await listProjects()).toHaveLength(2);
+  });
+
+  it('creates projects of your own and routes or moves captures into them', async () => {
+    const feature = await createProject('  Checkout redesign  ');
+    expect(feature).toMatchObject({ name: 'Checkout redesign', fileKey: null });
+    // New captures of a file can go to a chosen project instead of the file's own.
+    const routed = await createCapture(input({ projectId: feature.id }));
+    expect(routed.projectId).toBe(feature.id);
+    expect((await listProjects()).map((p) => p.name)).toEqual(['Checkout redesign']);
+    // A missing chosen project (deleted meanwhile) falls back to the file's project.
+    const fallback = await createCapture(input({ projectId: 'gone' }));
+    const fileProject = (await listProjects()).find((p) => p.fileKey === 'AbCdEf1234567890');
+    expect(fallback.projectId).toBe(fileProject?.id);
+    // Manual projects never capture a file's captures by file key.
+    expect(fileProject?.id).not.toBe(feature.id);
+    const moved = await moveCapture(fallback.id, feature.id);
+    expect(moved.projectId).toBe(feature.id);
+    expect((await getCapture(fallback.id))?.projectId).toBe(feature.id);
+    await expect(moveCapture(fallback.id, 'missing')).rejects.toThrow('Project not found');
+    // Deleting the project deletes the captures in it.
+    await deleteProject(feature.id);
+    expect(await listCaptures()).toHaveLength(0);
   });
 
   it('round-trips annotations and keeps the screenshot intact', async () => {

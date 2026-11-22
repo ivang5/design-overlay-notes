@@ -24,6 +24,7 @@ import { AnnotationCanvas } from '../editor/AnnotationCanvas';
 import { viewBoxFor, type ViewTransform } from '../shared/view-transform';
 import { Divider, SaveIndicator, ToolButton, ToolbarShell, ToolControls } from '../editor/Toolbar';
 import type { Notice, OverlayController, OverlayUiState } from './controller';
+import { findFigmaCanvas } from './figma-dom';
 
 const EDGE_MARGIN = 8;
 
@@ -40,6 +41,9 @@ export function OverlayApp({ controller }: { controller: OverlayController }) {
   // while Figma moves are applied on top as a CSS transform of the SVG layer:
   // the compositor moves it in the same frame without re-rendering the marks.
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const clipRef = useRef<HTMLDivElement | null>(null);
+  // Figma's canvas rectangle, re-read at most every 300 ms (live updates come per wheel event).
+  const canvasRectRef = useRef<{ rect: DOMRect | null; at: number }>({ rect: null, at: 0 });
   const committedRef = useRef<ViewTransform>(view.transform);
   committedRef.current = view.transform;
   const applyLive = useCallback(() => {
@@ -52,6 +56,24 @@ export function OverlayApp({ controller }: { controller: OverlayController }) {
     const dy = live.ty - k * committed.ty;
     const identity = Math.abs(k - 1) < 1e-6 && Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01;
     svg.style.transform = identity ? '' : `matrix(${k}, 0, 0, ${k}, ${dx}, ${dy})`;
+    // Once Figma's view moved, marks carried off the canvas must not cover
+    // Figma's panels: show them only over the canvas. (At the captured view,
+    // marks drawn on a panel stay visible.) A mask, unlike clip-path, leaves
+    // drawing input alone.
+    const clip = clipRef.current;
+    if (clip) {
+      const moved = Math.abs(live.s - 1) > 0.002 || Math.hypot(live.tx, live.ty) > 2;
+      const cached = canvasRectRef.current;
+      if (moved && performance.now() - cached.at > 300) {
+        canvasRectRef.current = { rect: findFigmaCanvas()?.getBoundingClientRect() ?? null, at: performance.now() };
+      }
+      const rect = moved ? canvasRectRef.current.rect : null;
+      if (rect) {
+        clip.style.setProperty('--don-clip-pos', `${rect.left}px ${rect.top}px`);
+        clip.style.setProperty('--don-clip-size', `${rect.width}px ${rect.height}px`);
+      }
+      clip.classList.toggle('is-clipped', Boolean(rect));
+    }
   }, [controller]);
   const setSvg = useCallback(
     (element: SVGSVGElement | null) => {
@@ -66,42 +88,44 @@ export function OverlayApp({ controller }: { controller: OverlayController }) {
   return (
     <>
       {showCanvas ? (
-        <AnnotationCanvas
-          store={controller.store}
-          // SVG units are capture CSS px; the viewBox maps them to the live view.
-          viewBoxWidth={viewport.width}
-          viewBoxHeight={viewport.height}
-          viewBox={viewBoxFor(view.transform, viewport.width, viewport.height)}
-          svgElementRef={setSvg}
-          uiScale={view.transform.s}
-          interactive={mode === 'annotate'}
-          className="don-live-canvas"
-          background={
-            ui.reference ? (
-              <image
-                href={ui.reference}
-                x={0}
-                y={0}
-                width={capture.viewportCssWidth}
-                height={capture.viewportCssHeight}
-                preserveAspectRatio="none"
-                opacity={0.5}
-                pointerEvents="none"
-                onError={() =>
-                  controller.setNotice(
-                    {
-                      id: 'error',
-                      tone: 'error',
-                      text: 'The page blocked the reference image. Open the capture in the notes manager instead.',
-                      actions: [],
-                    },
-                    6_000,
-                  )
-                }
-              />
-            ) : null
-          }
-        />
+        <div ref={clipRef} className="don-canvas-clip">
+          <AnnotationCanvas
+            store={controller.store}
+            // SVG units are capture CSS px; the viewBox maps them to the live view.
+            viewBoxWidth={viewport.width}
+            viewBoxHeight={viewport.height}
+            viewBox={viewBoxFor(view.transform, viewport.width, viewport.height)}
+            svgElementRef={setSvg}
+            uiScale={view.transform.s}
+            interactive={mode === 'annotate'}
+            className="don-live-canvas"
+            background={
+              ui.reference ? (
+                <image
+                  href={ui.reference}
+                  x={0}
+                  y={0}
+                  width={capture.viewportCssWidth}
+                  height={capture.viewportCssHeight}
+                  preserveAspectRatio="none"
+                  opacity={0.5}
+                  pointerEvents="none"
+                  onError={() =>
+                    controller.setNotice(
+                      {
+                        id: 'error',
+                        tone: 'error',
+                        text: 'The page blocked the reference image. Open the capture in the notes manager instead.',
+                        actions: [],
+                      },
+                      6_000,
+                    )
+                  }
+                />
+              ) : null
+            }
+          />
+        </div>
       ) : null}
       {mode === 'annotate' ? <div className="don-mode-frame" aria-hidden="true" /> : null}
       <FloatingArea controller={controller} ui={ui} />
@@ -214,7 +238,16 @@ function OverlayToolbar({
     />
   );
   const statusChip =
-    viewStatus === 'searching' ? (
+    ui.otherPage && viewStatus !== 'off' ? (
+      <button
+        type="button"
+        className="don-status is-link"
+        onClick={() => controller.findNotes()}
+        title={`These notes are on the page “${ui.otherPage}”: switch to it and go to them`}
+      >
+        On “{ui.otherPage}” · Go there
+      </button>
+    ) : viewStatus === 'searching' ? (
       <span className="don-status" role="status">
         Finding notes…
       </span>

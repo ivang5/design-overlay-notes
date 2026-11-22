@@ -1,24 +1,26 @@
 import { useEffect, useState } from 'react';
-import { ClipboardCopy, Copy, ExternalLink, ImageDown, LocateFixed, Monitor, NotebookPen, Trash2 } from 'lucide-react';
+import { ClipboardCopy, Copy, ExternalLink, FolderInput, ImageDown, LocateFixed, Monitor, NotebookPen, Trash2 } from 'lucide-react';
 import { errorMessage, sendToBackground } from '../../shared/messages';
-import type { Capture } from '../../shared/schemas';
-import { copyCapture, copyCapturePng, exportCapturePng, openReview, removeCapture, saveCaptureMeta } from '../actions';
+import type { Capture, Project } from '../../shared/schemas';
+import { copyCapture, copyCapturePng, exportCapturePng, moveCaptureTo, openReview, removeCapture, saveCaptureMeta } from '../actions';
 import { forgetThumbnail, useThumbnail } from '../hooks';
 import { ActionMenu, ConfirmPrompt, IconButton, InlineMessage, TagEditor, formatDateTime } from './common';
 
 interface Props {
   capture: Capture;
+  projects: Project[];
   windowId: number | null;
   knownTags: string[];
   isOnPage: boolean;
 }
 
-export function CaptureCard({ capture, windowId, knownTags, isOnPage }: Props) {
+export function CaptureCard({ capture, projects, windowId, knownTags, isOnPage }: Props) {
   const thumbnail = useThumbnail(capture.id);
   const [title, setTitle] = useState(capture.title);
   const [description, setDescription] = useState(capture.description);
   const [expanded, setExpanded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [moving, setMoving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: 'error' | 'warn' | 'ok' | 'info'; text: string } | null>(null);
   const [mismatch, setMismatch] = useState<string[] | null>(null);
@@ -151,6 +153,7 @@ export function CaptureCard({ capture, windowId, knownTags, isOnPage }: Props) {
               { label: 'Show over the current Figma tab', icon: Monitor, disabled: busy, onSelect: () => void showOnPage(false) },
               { label: 'Export annotated PNG', icon: ImageDown, disabled: busy, onSelect: () => void run(() => exportCapturePng(capture)) },
               { label: 'Duplicate', icon: Copy, disabled: busy, onSelect: () => void run(async () => void (await copyCapture(capture.id))) },
+              { label: 'Move to project…', icon: FolderInput, disabled: busy, onSelect: () => setMoving(true) },
               {
                 label: expanded ? 'Hide description & labels' : 'Description & labels',
                 icon: NotebookPen,
@@ -160,6 +163,16 @@ export function CaptureCard({ capture, windowId, knownTags, isOnPage }: Props) {
             ]}
           />
         </div>
+        {moving ? (
+          <MoveToProject
+            projects={projects.filter((p) => p.id !== capture.projectId)}
+            onCancel={() => setMoving(false)}
+            onMove={(projectId) => {
+              setMoving(false);
+              void run(() => moveCaptureTo(capture.id, projectId));
+            }}
+          />
+        ) : null}
         {confirmDelete ? (
           <ConfirmPrompt
             prompt="Delete this capture and its notes?"
@@ -248,5 +261,58 @@ export function CaptureCard({ capture, windowId, knownTags, isOnPage }: Props) {
         ) : null}
       </div>
     </article>
+  );
+}
+
+/** Inline picker: move a capture to another project. */
+function MoveToProject({
+  projects,
+  onMove,
+  onCancel,
+}: {
+  projects: Project[];
+  onMove: (projectId: string) => void;
+  onCancel: () => void;
+}) {
+  const sorted = [...projects].sort((a, b) => a.name.localeCompare(b.name));
+  const [projectId, setProjectId] = useState(sorted[0]?.id ?? '');
+  if (sorted.length === 0) {
+    return (
+      <InlineMessage tone="info" onDismiss={onCancel}>
+        There is no other project yet. Create one with “New project” above the list.
+      </InlineMessage>
+    );
+  }
+  return (
+    <form
+      className="dp-move"
+      aria-label="Move to project"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (projectId) onMove(projectId);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') onCancel();
+      }}
+    >
+      <label className="dp-field">
+        <span>Move to project</span>
+        <select autoFocus value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+          {sorted.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="dp-row">
+        <button type="submit" className="dp-btn is-primary is-small">
+          Move
+        </button>
+        <button type="button" className="dp-btn is-small" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }

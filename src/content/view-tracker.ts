@@ -61,6 +61,8 @@ export interface AlignRequestInput {
   scaleTolerance: number | null;
   /** The seed's scale is exact (Figma's zoom curve / preset levels): refine position first. */
   lockScale: boolean;
+  /** May look far from the seed (full search)? Routine checks only fine-tune. */
+  allowSearch: boolean;
   region: RegionGrid | null;
 }
 
@@ -75,6 +77,8 @@ export interface ViewTrackerDelegate {
   followEnabled(): boolean;
   /** Zoom Figma's canvas by `factor` around its centre (synthetic wheel input); resolves once applied. */
   zoomCanvas(factor: number): Promise<void>;
+  /** Figma's "Zoom to fit" (whole page); resolves with the new zoom level once settled, null if unavailable. */
+  zoomToFit(): Promise<number | null>;
   /** False while our drawing mode captures the keyboard (keys never reach Figma then). */
   keysReachFigma(): boolean;
   /** Figma zoom level at capture time, if recorded. */
@@ -87,6 +91,8 @@ export interface ViewTrackerDelegate {
   onLive(transform: ViewTransform): void;
   /** A screenshot check confirmed where the capture is. */
   onConfirmed(transform: ViewTransform): void;
+  /** The check after flying to the notes did not find them where predicted. */
+  onLandingUnconfirmed(): void;
   align(input: AlignRequestInput): Promise<ViewAlignResult>;
 }
 
@@ -98,11 +104,13 @@ const VERIFY_AFTER_CLICK_MS = 900;
 const MIN_CLICK_VERIFY_INTERVAL_MS = 4_000;
 /** Re-check once after a search-based result (Figma may still be refining its rendering). */
 const CONFIRM_AFTER_SEARCH_MS = 700;
+/** A scale measured with the area at least this large on screen is precise enough to lock. */
+const PRECISE_SCALE_MIN = 0.6;
 /** Corrections smaller than this (screen px) are eased in instead of jumping. */
 const EASE_MAX_PX = 60;
 const EASE_MS = 140;
-/** Figma pans at most this far per wheel event (measured). */
-const WHEEL_PAN_CLAMP = 120;
+/** Figma pans at most this far per wheel event: the length of the (dx, dy) step, not each axis (measured). */
+export const WHEEL_PAN_CLAMP = 120;
 
 /**
  * Figma's Ctrl/⌘+wheel zoom response, measured on Figma (Chrome, Nov 2026):
@@ -121,7 +129,15 @@ function wheelPixels(e: WheelEvent): { dx: number; dy: number } {
   return { dx: e.deltaX * unit, dy: e.deltaY * unit };
 }
 
-const clampPan = (v: number) => Math.max(-WHEEL_PAN_CLAMP, Math.min(WHEEL_PAN_CLAMP, v));
+/**
+ * How far Figma pans for one wheel event: the step is scaled down to at most
+ * WHEEL_PAN_CLAMP px long (a (100, 100) step moves (85, 85); measured Nov 2026).
+ */
+export function figmaWheelPan(dx: number, dy: number): { dx: number; dy: number } {
+  const length = Math.hypot(dx, dy);
+  const k = length > WHEEL_PAN_CLAMP ? WHEEL_PAN_CLAMP / length : 1;
+  return { dx: dx * k, dy: dy * k };
+}
 
 /**
  * Keyboard shortcuts that move Figma's view:
@@ -143,7 +159,17 @@ function viewKeyKind(e: KeyboardEvent): 'zoom' | 'jump' | null {
 const PRESET_ZOOMS = [0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256];
 const isPresetZoom = (z: number) => PRESET_ZOOMS.some((p) => Math.abs(p - z) < 1e-9);
 
-type Pending = 'none' | 'exact' | 'predicted' | 'unknown' | 'verify';
+/**
+ * Why a check runs, which decides how far it may look:
+ *  - verify: routine check (click, key, settle) — fine-tune near the prediction only;
+ *  - exact: after exactly predicted input — same;
+ *  - drag: after a drag we could not classify (scrollbar? moving layers?) — may search;
+ *  - predicted: after an approximate prediction — may search;
+ *  - unknown: after an unpredictable jump — searches.
+ * A far-away search on a near-empty area can lock onto a look-alike (repeated
+ * frames), so only checks that really need it may search.
+ */
+type Pending = 'none' | 'verify' | 'exact' | 'drag' | 'recheck' | 'predicted' | 'unknown';
 
 /** Test builds expose a short decision trace on <html data-don-trace> for the e2e tests. */
 function trace(message: string): void {
@@ -154,10 +180,16 @@ function trace(message: string): void {
   root.dataset.donTrace = lines.slice(-60).join('\n');
 }
 
-const rank: Record<Pending, number> = { none: 0, verify: 1, exact: 2, predicted: 3, unknown: 4 };
+const rank: Record<Pending, number> = { none: 0, verify: 1, exact: 2, drag: 3, recheck: 4, predicted: 5, unknown: 6 };
+/** 'recheck': a trusted prediction that should be in plain view did not match; search once, keep it if nothing is found. */
+const maySearch = (kind: Pending) => kind === 'drag' || kind === 'recheck' || kind === 'predicted' || kind === 'unknown';
 
-/** Figma's minimum zoom level (2 %). */
-const MIN_FIGMA_ZOOM = 0.02;
+/**
+ * Figma's zoom limits: it ignores zooming beyond them (the label stops at
+ * "2%" while the real minimum is 1/64 ≈ 1.56 %; measured from real wheel input).
+ */
+const FIGMA_ZOOM_MIN = 1 / 64;
+const FIGMA_ZOOM_MAX = 256;
 
 /**
  * A reference view of the current Figma page for this tab: `view` maps frame
@@ -206,6 +238,15 @@ export class ViewTracker {
   private lastClickVerify = 0;
   /** One extra search when a confirmation unexpectedly fails while the area should be visible. */
   private suspectRetry = false;
+  /** Figma stopped at a zoom limit since the last confirmation: positions since are approximate. */
+  private limitHit = false;
+  /** Figma's zoom as last predicted (see currentFigmaZoom). */
+  private zoomEstimate: number | null = null;
+  private lastZoomAt = 0;
+  /** Where a 'recheck' search last ran (not again until the view moved on). */
+  private recheckedAt: ViewTransform | null = null;
+  /** The next used check result is the one after a flight to the notes. */
+  private landing = false;
   /** Figma zoom readout and our scale at the last confirmed alignment. */
   private confirmed: { zoom: number; s: number } | null = null;
   /**
@@ -235,6 +276,8 @@ export class ViewTracker {
   private readonly placements = new Map<string, Placement>();
   private locating = false;
   private locateAborted = false;
+  private pendingZooms: { factor: number; x: number; y: number }[] = [];
+  private zoomFrame: number | null = null;
 
   constructor(private readonly delegate: ViewTrackerDelegate) {
     // The view when the overlay starts is the first frame's origin.
@@ -268,6 +311,11 @@ export class ViewTracker {
     return this.live;
   }
 
+  /** Where the view is known to be: the end of a running eased correction, else the live prediction. */
+  getSettled(): ViewTransform {
+    return this.easing?.to ?? this.live;
+  }
+
   /**
    * Show a capture's marks: a new capture (identity, `placed`), a capture at a
    * known position (following), or one still to be found (searching — call
@@ -289,6 +337,9 @@ export class ViewTracker {
     this.confirmed = null;
     this.zoomRatio = null;
     this.suspectRetry = false;
+    this.recheckedAt = null;
+    this.landing = false;
+    this.limitHit = false;
     this.scaleTrusted = status === 'following';
     const zoom = readFigmaZoom();
     if (status === 'following' && zoom) {
@@ -301,6 +352,35 @@ export class ViewTracker {
 
   /** Confirm the shown position soon (e.g. after showing it at a predicted place). */
   verifySoon(): void {
+    this.schedule('verify', SETTLE_MS);
+  }
+
+  /**
+   * Before flying to the notes: is the predicted position too unreliable or
+   * too far away to fly by? (Figma hit a zoom limit since the last check, or
+   * the area is more than 3 canvas widths outside the view.) Then the caller
+   * should locate({ overview: true }) first and fly a short, confirmed trip.
+   */
+  needsOverview(): boolean {
+    if (this.limitHit) return true;
+    const size = this.delegate.captureSize();
+    const canvas = findFigmaCanvas()?.getBoundingClientRect();
+    if (!size || !canvas) return false;
+    const t = this.getSettled();
+    const cx = t.tx + (t.s * size.width) / 2;
+    const cy = t.ty + (t.s * size.height) / 2;
+    const dx = Math.max(canvas.left - cx, 0, cx - canvas.right);
+    const dy = Math.max(canvas.top - cy, 0, cy - canvas.bottom);
+    return Math.hypot(dx, dy) > 3 * canvas.width;
+  }
+
+  /**
+   * A flight to the notes just ended: the next check must confirm the landing.
+   * If it doesn't, the delegate is told (and searches for the notes) instead of
+   * the dead-reckoned position being kept.
+   */
+  expectLanding(): void {
+    this.landing = true;
     this.schedule('verify', SETTLE_MS);
   }
 
@@ -329,10 +409,10 @@ export class ViewTracker {
    * Find the shown capture's area and place the marks on it. Looks at the
    * current view first; with `explore`, then zooms Figma out step by step
    * around the canvas centre (the area becomes visible at a lower zoom) and
-   * searches again. If it is not found, the original view is restored.
+   * searches again, and finally searches the whole page ("Zoom to fit").
    * Returns whether it was found. Real user input cancels the exploration.
    */
-  async locate(options: { explore: boolean; justLoaded?: boolean }): Promise<boolean> {
+  async locate(options: { explore: boolean; justLoaded?: boolean; overview?: boolean }): Promise<boolean> {
     if (this.locating) return false;
     // Claim control first: a check still in flight must not apply its result.
     this.locating = true;
@@ -345,8 +425,10 @@ export class ViewTracker {
     if (this.state.status !== 'searching') this.commit({ transform: this.live, status: 'searching' });
     let zoomApplied = 1;
     try {
-      if (await this.alignHere()) return true;
-      if (options.justLoaded && !aborted()) {
+      // `overview`: the area is far away or its position is not reliable: go
+      // straight to the whole page instead of looking around here first.
+      if (!options.overview && (await this.alignHere())) return true;
+      if (options.justLoaded && !options.overview && !aborted()) {
         // Figma may still be drawing the canvas right after loading.
         await sleep(1_200);
         if (!aborted() && (await this.alignHere())) return true;
@@ -354,10 +436,11 @@ export class ViewTracker {
       const startZoom = readFigmaZoom();
       const captureZoom = this.delegate.captureZoom();
       if (!options.explore || aborted() || !startZoom || !captureZoom) return this.giveUp(aborted());
-      // Zoom out so the captured area shows at ½, ¼, then ⅐ of its captured size.
+      // One zoom-out step (the area at ¼ of its captured size: covers a 4× larger
+      // region around here), then the whole page (zoom to fit) below.
       let current = startZoom;
-      for (const divisor of [2, 4, 7]) {
-        const target = Math.max(MIN_FIGMA_ZOOM, captureZoom / divisor);
+      for (const divisor of options.overview ? [] : [4]) {
+        const target = Math.max(FIGMA_ZOOM_MIN, captureZoom / divisor);
         if (target >= current * 0.95) continue;
         if (aborted()) return this.giveUp(true);
         const factor = target / current;
@@ -373,6 +456,17 @@ export class ViewTracker {
           scaleHint: (startZoom * zoomApplied) / captureZoom,
           scaleTolerance: 0.005 / startZoom + 0.005 / captureZoom + 0.006,
         };
+        if (await this.alignHere(hint)) return true;
+      }
+      // Not near the current view (e.g. after a reload Figma restores another
+      // view): show the whole page with Figma's "Zoom to fit" and search there.
+      if (aborted()) return this.giveUp(true);
+      trace('explore: zoom to fit');
+      const fitZoom = await this.delegate.zoomToFit();
+      if (aborted()) return this.giveUp(true);
+      if (fitZoom) {
+        zoomApplied = 1; // the view jumped: nothing to restore
+        const hint = { scaleHint: fitZoom / captureZoom, scaleTolerance: 0.005 / fitZoom + 0.005 / captureZoom + 0.006 };
         if (await this.alignHere(hint)) return true;
       }
       if (zoomApplied !== 1 && !aborted()) {
@@ -402,7 +496,11 @@ export class ViewTracker {
     const result = await this.delegate.align(request).catch(() => null);
     if (!result || generation !== this.generation || this.locateAborted) return false;
     if (result.status !== 'aligned') return false;
-    this.acceptAligned(result.transform, request.liveZoom, 'unknown');
+    if (!this.scaleConsistent(result.transform.s, request.liveZoom)) {
+      trace(`rejected: scale ${result.transform.s.toFixed(4)} contradicts the zoom label`);
+      return false;
+    }
+    this.acceptAligned(result.transform, request.liveZoom, 'unknown', false);
     if (result.method === 'search') this.schedule('verify', CONFIRM_AFTER_SEARCH_MS);
     return true;
   }
@@ -436,8 +534,56 @@ export class ViewTracker {
     return this.delegate.followEnabled();
   }
 
+  /** Apply this frame's queued Ctrl+wheel zoom steps (each its own factor and anchor). */
+  private flushZooms(): void {
+    this.zoomFrame = null;
+    const zooms = this.pendingZooms;
+    this.pendingZooms = [];
+    for (const zoom of zooms) {
+      // Figma stops at its zoom limits: so must the prediction (else every later
+      // move is converted with a wrong scale and the notes' position drifts away).
+      let factor = zoom.factor;
+      const before = this.currentFigmaZoom();
+      let clamped = false;
+      if (before) {
+        const after = Math.min(FIGMA_ZOOM_MAX, Math.max(FIGMA_ZOOM_MIN, before * factor));
+        clamped = Math.abs(after - before * factor) > after * 1e-6;
+        factor = after / before;
+        this.zoomEstimate = after;
+      }
+      this.lastZoomAt = performance.now();
+      if (Math.abs(factor - 1) > 1e-9) this.viewChanged(zoomDelta(factor, zoom.x, zoom.y), 'exact');
+      if (clamped) {
+        // Figma's exact limit and our rounded zoom calibration differ by ~1 %:
+        // at the minimum zoom every drag spans tens of thousands of design px,
+        // so positions from here on are only approximate. Don't navigate by the
+        // tracked frame, and find the area before flying to it (needsOverview).
+        this.frame.view = null;
+        this.limitHit = true;
+        this.scaleTrusted = false;
+      }
+    }
+  }
+
+  /**
+   * Figma's current zoom: from the shown capture's calibrated zoom when known
+   * (precise), else the running estimate, re-synced to the zoom label once it
+   * has settled (the label is rounded to whole percent).
+   */
+  private currentFigmaZoom(): number | null {
+    if (this.active() && this.zoomRatio) return this.zoomRatio.value * this.live.s;
+    if (this.zoomEstimate === null || performance.now() - this.lastZoomAt > 300) {
+      const label = readFigmaZoom();
+      if (label && (this.zoomEstimate === null || Math.abs(Math.log(this.zoomEstimate / label)) > 0.006 / label + 0.002)) {
+        this.zoomEstimate = label;
+      }
+    }
+    return this.zoomEstimate;
+  }
+
   /** Real input while locate() is navigating hands control back to the user. */
   private noteUserInput(e: Event): void {
+    if (e.isTrusted) this.landing = false; // the user took over
     if (e.isTrusted && this.locating) this.locateAborted = true;
   }
 
@@ -463,11 +609,16 @@ export class ViewTracker {
     this.noteUserInput(e);
     const { dx, dy } = wheelPixels(e);
     if (e.ctrlKey || e.metaKey) {
-      this.viewChanged(zoomDelta(figmaWheelZoom(dy), e.clientX, e.clientY), 'exact');
+      // Figma pans immediately but applies zoom steps at the next frame (after
+      // that frame's pans): queue them so the prediction follows the same order.
+      this.pendingZooms.push({ factor: figmaWheelZoom(dy), x: e.clientX, y: e.clientY });
+      this.zoomFrame ??= requestAnimationFrame(() => this.flushZooms());
     } else if (e.shiftKey && dx === 0) {
-      this.viewChanged(panDelta(-clampPan(dy), 0), 'predicted');
+      // Shift+wheel scrolls sideways: deltaY pans horizontally, same cap (measured).
+      this.viewChanged(panDelta(-figmaWheelPan(dy, 0).dx, 0), 'exact');
     } else {
-      this.viewChanged(panDelta(-clampPan(dx), -clampPan(dy)), 'exact');
+      const pan = figmaWheelPan(dx, dy);
+      this.viewChanged(panDelta(-pan.dx, -pan.dy), 'exact');
     }
   }
 
@@ -502,7 +653,7 @@ export class ViewTracker {
     if (!this.active() || this.isOurs(e)) return;
     if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 5) {
       // A drag we could not predict (scrollbar, moving layers…): check soon.
-      this.schedule('verify', SETTLE_MS);
+      this.schedule('drag', SETTLE_MS);
     } else if (Date.now() - this.lastClickVerify > MIN_CLICK_VERIFY_INTERVAL_MS) {
       // Clicks in Figma (pages list, layers, menus) can move the view; check lazily.
       this.schedule('verify', VERIFY_AFTER_CLICK_MS);
@@ -617,20 +768,6 @@ export class ViewTracker {
     this.settleTimer = null;
   }
 
-  /** Expected share of the capture's area inside the Figma canvas under `t`. */
-  private expectedVisibleShare(t: ViewTransform): number {
-    const size = this.delegate.captureSize();
-    const canvas = this.canvasRect ?? findFigmaCanvas()?.getBoundingClientRect() ?? null;
-    if (!size || !canvas) return 0;
-    const x0 = Math.max(canvas.left, t.tx);
-    const y0 = Math.max(canvas.top, t.ty);
-    const x1 = Math.min(canvas.right, t.tx + size.width * t.s);
-    const y1 = Math.min(canvas.bottom, t.ty + size.height * t.s);
-    const visible = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
-    const canvasArea = canvas.width * canvas.height;
-    return canvasArea > 0 ? visible / Math.min(canvasArea, size.width * size.height * t.s * t.s) : 0;
-  }
-
   private async run(): Promise<void> {
     this.settleTimer = null;
     if (this.pending === 'none' || !this.active()) return;
@@ -657,7 +794,9 @@ export class ViewTracker {
         const tolerance = 0.006 / liveZoom + 0.006 / this.confirmed.zoom + 0.01;
         if (Math.abs(Math.log(liveZoom / expected)) > tolerance) {
           // Zoom changed in a way we did not predict (menu, shortcut, zoom-to-fit…).
+          // The tracked frame is wrong from here on: never navigate by it.
           kind = 'unknown';
+          this.frame.view = null;
           request.lockScale = false;
           if (!request.scaleHint) {
             request.scaleHint = (before.transform.s * liveZoom) / expected;
@@ -677,20 +816,34 @@ export class ViewTracker {
         trace('result discarded (view moved during alignment)');
         return;
       }
-      if (result.status === 'aligned') {
-        this.acceptAligned(result.transform, liveZoom, kind);
+      const landing = this.landing;
+      this.landing = false;
+      const consistent = result.status !== 'aligned' || this.scaleConsistent(result.transform.s, liveZoom);
+      if (!consistent) trace(`rejected: scale ${result.status === 'aligned' ? result.transform.s.toFixed(4) : ''} contradicts the zoom label`);
+      if (result.status === 'aligned' && consistent) {
+        const scaleKept = request.lockScale && Math.abs(result.transform.s / before.transform.s - 1) < 1e-9;
+        this.acceptAligned(result.transform, liveZoom, kind, scaleKept);
         if (result.method === 'search' && kind !== 'verify') {
           // Double-check a searched answer once the view has fully settled.
           this.schedule('verify', CONFIRM_AFTER_SEARCH_MS);
         }
-      } else if (result.status === 'not-found') {
-        const share = this.expectedVisibleShare(this.live);
-        if (kind === 'exact' || (kind === 'verify' && share < 0.3)) {
-          // Exact predictions (consistent with Figma's zoom label, checked above)
-          // stay trusted: the area scrolled out of view, or is magnified too much
-          // to confirm from the capture's pixels.
+      } else if (result.status === 'not-found' || !consistent) {
+        if (landing) {
+          // Flew to where the notes should be, but they aren't there (input we
+          // could not model on the way): find them for real instead of trusting it.
+          trace('landing not confirmed: searching');
+          this.delegate.onLandingUnconfirmed();
+        } else if (kind !== 'recheck' && (kind === 'exact' || kind === 'verify' || kind === 'drag') && this.shouldRecheck(before.transform)) {
+          // The area should be in plain view but does not match: the prediction
+          // may be off. Search once (marks stay); keep the prediction if nothing is found.
+          this.recheckedAt = before.transform;
+          this.schedule('recheck', 0);
+        } else if (kind === 'exact' || kind === 'verify' || kind === 'drag' || kind === 'recheck') {
+          // Predictions that only exact input produced (checked against Figma's
+          // zoom label above) stay trusted: the area may be out of view, too
+          // magnified, or too plain (empty canvas) to confirm from pixels.
           if (this.state.status !== 'following') this.commit({ ...this.state, status: 'lost' });
-        } else if (!this.suspectRetry && kind !== 'unknown') {
+        } else if (!this.suspectRetry && kind === 'predicted') {
           // The area should be visible but was not confirmed: search before trusting or hiding.
           this.suspectRetry = true;
           this.commit({ ...this.state, status: 'searching' });
@@ -737,16 +890,61 @@ export class ViewTracker {
       inkVisible,
       scaleHint,
       scaleTolerance,
-      lockScale: kind === 'exact' && this.scaleTrusted,
+      lockScale: (kind === 'exact' || kind === 'verify' || kind === 'drag') && this.scaleTrusted,
+      allowSearch: maySearch(kind),
       region,
       liveZoom,
     };
   }
 
-  /** A confirmed position for the shown capture. */
-  private acceptAligned(transform: ViewTransform, liveZoom: number | null, kind: Pending): void {
+  /**
+   * Should the capture's area be plainly visible under `t` (mostly inside the
+   * canvas, at a confirmable scale), and was it not rechecked around here yet?
+   */
+  private shouldRecheck(t: ViewTransform): boolean {
+    if (this.recheckedAt && transformDistance(this.recheckedAt, t, innerWidth, innerHeight) < 200) return false;
+    const size = this.delegate.captureSize();
+    const canvas = findFigmaCanvas()?.getBoundingClientRect();
+    if (!size || !canvas || t.s < 0.35 || t.s > 3) return false;
+    const x1 = t.tx + t.s * size.width;
+    const y1 = t.ty + t.s * size.height;
+    const w = Math.max(0, Math.min(x1, canvas.right) - Math.max(t.tx, canvas.left));
+    const h = Math.max(0, Math.min(y1, canvas.bottom) - Math.max(t.ty, canvas.top));
+    return (w * h) / (t.s * size.width * t.s * size.height) >= 0.4;
+  }
+
+  /**
+   * Does a found scale agree with Figma's zoom label? A look-alike match at a
+   * different scale (e.g. a neighbouring repeated frame) is rejected here.
+   */
+  private scaleConsistent(s: number, liveZoom: number | null): boolean {
+    if (!liveZoom) return true;
+    const captureZoom = this.delegate.captureZoom();
+    let expected: number;
+    let tolerance: number;
+    if (this.zoomRatio) {
+      expected = liveZoom / this.zoomRatio.value;
+      tolerance = (isPresetZoom(liveZoom) ? 0 : 0.005 / liveZoom) + this.zoomRatio.error + 0.008;
+    } else if (captureZoom) {
+      expected = liveZoom / captureZoom;
+      tolerance = 0.005 / liveZoom + 0.005 / captureZoom + 0.008;
+    } else {
+      return true;
+    }
+    return Math.abs(Math.log(s / expected)) <= tolerance;
+  }
+
+  /**
+   * A confirmed position for the shown capture. `scaleKept`: the check kept the
+   * predicted (trusted) scale and only fixed the position.
+   */
+  private acceptAligned(transform: ViewTransform, liveZoom: number | null, kind: Pending, scaleKept: boolean): void {
     this.suspectRetry = false;
-    this.scaleTrusted = true;
+    this.recheckedAt = null;
+    this.limitHit = false;
+    // A scale measured while the area looks small (zoomed far out) is only
+    // roughly known: don't lock it for later checks, let them refine it.
+    this.scaleTrusted = scaleKept || transform.s >= PRECISE_SCALE_MIN;
     if (liveZoom) {
       this.confirmed = { zoom: liveZoom, s: transform.s };
       // Preset levels reached by +/−/Shift+0 are exact; otherwise the label is rounded.

@@ -9,7 +9,8 @@ A private, local-only Chrome extension for drawing and writing personal notes on
 - **Captures:** each set of notes is tied to a screenshot of the Figma view taken when annotating starts, so notes keep their context after the design changes.
 - **Drawing and browse modes:** while drawing, Figma receives no clicks or keys (scrolling and zooming still reach the canvas). In browse mode, notes stay visible and clicks go through to Figma.
 - **Autosave** with a visible warning if saving fails.
-- **Notes manager (side panel):** captures grouped per Figma file, thumbnails, search (including note text), labels, descriptions, rename, duplicate, delete, **Open in Figma** (reuses or opens the file's tab, switches to the right page, finds the notes and returns to the captured view), and showing a saved capture over the current tab.
+- **Notes manager (side panel):** captures grouped in projects, thumbnails, search (including note text), labels, descriptions, rename, duplicate, delete, **Open in Figma** (reuses or opens the file's tab, switches to the right page, finds the notes and returns to the captured view), and showing a saved capture over the current tab.
+- **Projects:** each Figma file gets its own project automatically. You can also create projects (for example one per feature), choose which project a file's new captures go to, and move captures between projects.
 - **Review page:** a full-size view of each capture with editing.
 - **Export and backup:** annotated PNG per capture (download or copy to the clipboard), plus full backup and restore as a `.zip`.
 - **Privacy:** stored in the extension's IndexedDB only, with no account, sync or analytics. Screenshots used to follow the Figma view are compared in memory and never stored. Uses 4 permissions (`activeTab`, `scripting`, `storage`, `sidePanel`), plus optional access to www.figma.com if you enable it in Settings. Local data is not encrypted.

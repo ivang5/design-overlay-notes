@@ -31,14 +31,15 @@
     <input class="focus-target" aria-label="Figma Design" />
     <script>
       // A tiny Figma-like canvas: screen = s · scene + t (viewport CSS px).
-      // Zoom follows Figma's measured Ctrl+wheel curve; the pan clamp (100 px
-      // per event, Figma: 120) deliberately differs so the correction path runs.
+      // Zoom follows Figma's measured Ctrl+wheel curve; the pan cap (100 px step
+      // length per event, Figma: 120) deliberately differs so the correction path runs.
       const canvas = document.getElementById('canvas');
       const ctx = canvas.getContext('2d');
       const zoomButton = document.getElementById('zoom');
       const view = { s: 0.5, tx: 300, ty: 120 };
       let page = 1;
       window.__view = view;
+      window.__draw = () => draw();
       window.__page = () => page;
 
       function rand(seed) {
@@ -108,12 +109,16 @@
       canvas.addEventListener('wheel', (e) => {
         e.preventDefault();
         if (e.ctrlKey || e.metaKey) {
+          // Like Figma: pans apply at once, zoom steps at the next frame.
           const m = Math.abs(e.deltaY);
-          zoomAbout(Math.exp(-Math.sign(e.deltaY) * 0.005 * Math.min(m, 9.6549 * Math.cbrt(m))), e.clientX, e.clientY);
+          const factor = Math.exp(-Math.sign(e.deltaY) * 0.005 * Math.min(m, 9.6549 * Math.cbrt(m)));
+          const x = e.clientX, y = e.clientY;
+          requestAnimationFrame(() => zoomAbout(factor, x, y));
         } else {
-          const clamp = (v) => Math.max(-100, Math.min(100, v));
-          view.tx -= clamp(e.deltaX);
-          view.ty -= clamp(e.deltaY);
+          // Like Figma: the step's length is capped, not each axis.
+          const k = Math.min(1, 100 / (Math.hypot(e.deltaX, e.deltaY) || 1));
+          view.tx -= e.deltaX * k;
+          view.ty -= e.deltaY * k;
           draw();
         }
       }, { passive: false });

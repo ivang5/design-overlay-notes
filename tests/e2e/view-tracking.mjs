@@ -111,6 +111,8 @@ try {
     return error;
   };
   const expectInstant = async (what) => {
+    // One frame: Figma (and the fixture) apply zoom steps at the next frame.
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     const error = await liveError();
     assert.ok(error < 1.5, `${what}: marks should follow in the same frame (error ${error.toFixed(2)}px)`);
     log(`${what}: marks moved with the canvas immediately (error ${error.toFixed(2)}px before any check)`);
@@ -223,6 +225,71 @@ try {
     return { ok: error < 1, error, v };
   }, 'canvas back at the captured view');
   await expectAligned('Open in Figma restored the captured view', 1.5);
+
+  // 6a. The reported case: zoom far out, travel far into the empty canvas
+  //     (nothing to confirm the position against), then Open in Figma. The
+  //     flight must land exactly (Figma caps each wheel step's length, so long
+  //     diagonal flights used to fall short).
+  await page.mouse.move(700, 300);
+  for (let i = 0; i < 10; i++) {
+    await page.keyboard.down('Control');
+    await page.mouse.wheel(0, 100);
+    await page.keyboard.up('Control');
+  }
+  // Steps within both caps (fixture 100, Figma 120): predicted exactly, as on Figma.
+  for (let i = 0; i < 20; i++) await page.mouse.wheel(0, 100);
+  for (let i = 0; i < 20; i++) await page.mouse.wheel(-100, 0);
+  await page.waitForTimeout(600);
+  const farOpener = await context.newPage();
+  await farOpener.goto(`chrome-extension://${new URL(sw.url()).host}/src/sidepanel/index.html`);
+  const farOpened = await farOpener.evaluate(
+    ([windowId, captureId]) => chrome.runtime.sendMessage({ type: 'PANEL_OPEN_IN_FIGMA', windowId, captureId }),
+    [windowId, captureId],
+  );
+  await farOpener.close();
+  assert.deepEqual(farOpened, { ok: true, data: { status: 'shown' } });
+  await waitFor(async () => {
+    const v = await fixtureView();
+    const error = Math.max(Math.abs(v.s / captureView.s - 1) * 1000, Math.abs(v.tx - captureView.tx), Math.abs(v.ty - captureView.ty));
+    return { ok: error < 1, error, v };
+  }, 'canvas back at the captured view after a long trip');
+  await expectAligned('Open in Figma after zooming far out and travelling far into empty canvas', 1.5);
+
+  // 6a2. Figma moved in a way we could not follow (e.g. dragging its scrollbars)
+  //      while the notes were off-screen: the landing check fails, the notes are
+  //      found for real, and the second flight lands exactly.
+  await page.mouse.move(700, 300);
+  for (let i = 0; i < 6; i++) {
+    await page.keyboard.down('Control');
+    await page.mouse.wheel(0, 100);
+    await page.keyboard.up('Control');
+  }
+  for (let i = 0; i < 12; i++) await page.mouse.wheel(0, 100);
+  await page.waitForTimeout(600);
+  await page.evaluate(() => {
+    window.__view.tx += 700;
+    window.__view.ty -= 400;
+    window.__draw();
+  });
+  await page.waitForTimeout(400);
+  const jumpOpener = await context.newPage();
+  await jumpOpener.goto(`chrome-extension://${new URL(sw.url()).host}/src/sidepanel/index.html`);
+  const jumpStarted = Date.now();
+  const jumpOpened = await jumpOpener.evaluate(
+    ([windowId, captureId]) => chrome.runtime.sendMessage({ type: 'PANEL_OPEN_IN_FIGMA', windowId, captureId }),
+    [windowId, captureId],
+  );
+  await jumpOpener.close();
+  assert.deepEqual(jumpOpened, { ok: true, data: { status: 'shown' } });
+  await waitFor(async () => {
+    const v = await fixtureView();
+    const error = Math.max(Math.abs(v.s / captureView.s - 1) * 1000, Math.abs(v.tx - captureView.tx), Math.abs(v.ty - captureView.ty));
+    return { ok: error < 1, error, v };
+  }, 'canvas back at the captured view after a move we could not follow', 20_000).catch(async (error) => {
+    console.log(await page.evaluate(() => document.documentElement.dataset.donTrace));
+    throw error;
+  });
+  await expectAligned(`Open in Figma after a move we could not follow (recovered in ${Date.now() - jumpStarted} ms)`, 1.5);
 
   // 6b. Same, but nothing is known about the view: the page was reloaded,
   //     switched to another page and scrolled far away. The extension switches
