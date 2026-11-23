@@ -168,6 +168,7 @@ export async function alignView(tab: chrome.tabs.Tab, request: AlignRequest): Pr
     scaleTolerance: request.scaleTolerance,
     lockScale: request.lockScale,
     allowSearch: request.allowSearch,
+    priorSigma: request.priorSigma && request.seed ? request.priorSigma * WORK_SCALE : null,
   });
   if (__E2E__) {
     // Test builds keep a short log the e2e test can read.
@@ -177,7 +178,9 @@ export async function alignView(tab: chrome.tabs.Tab, request: AlignRequest): Pr
       ncc: result ? Math.round(result.ncc * 1000) / 1000 : null,
       method: result?.method ?? null,
       confident: result?.confident ?? false,
+      ambiguous: result?.ambiguous ?? false,
       seed: request.seed,
+      prior: request.priorSigma ?? null,
       hint: request.scaleHint,
       transform: result?.transform ? fromWork(result.transform) : null,
       attempts: result?.attempts.map((a) => ({

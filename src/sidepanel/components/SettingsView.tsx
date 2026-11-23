@@ -206,7 +206,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
             <Download size={15} aria-hidden="true" /> Export backup
           </button>
           <button type="button" className="dp-btn" disabled={busy} onClick={() => fileInput.current?.click()}>
-            <Upload size={15} aria-hidden="true" /> Restore from backup…
+            <Upload size={15} aria-hidden="true" /> Restore from backup
           </button>
           <input
             ref={fileInput}
@@ -238,7 +238,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         <ul className="dp-shortcuts">
           {commands.map((command) => (
             <li key={command.name}>
-              <span>{command.name === '_execute_action' ? 'Start annotating / toggle drawing' : command.description}</span>
+              <span>{command.name === '_execute_action' ? 'Open the toolbar / start or stop drawing' : command.description}</span>
               {command.shortcut ? <kbd>{command.shortcut}</kbd> : <span className="dp-muted">not set</span>}
             </li>
           ))}
@@ -254,7 +254,7 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
         </ul>
         <button
           type="button"
-          className="dp-btn"
+          className="dp-btn is-fit"
           onClick={() => void chrome.tabs.create({ url: 'chrome://extensions/shortcuts' })}
         >
           Change shortcuts
@@ -275,8 +275,8 @@ export function SettingsView({ onBack }: { onBack: () => void }) {
           })}
         >
           {(ask) => (
-            <button type="button" className="dp-btn is-danger" disabled={busy} onClick={ask}>
-              Delete all local data…
+            <button type="button" className="dp-btn is-danger is-fit" disabled={busy} onClick={ask}>
+              Delete all local data
             </button>
           )}
         </ConfirmAction>

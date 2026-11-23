@@ -581,7 +581,20 @@ export interface AlignOptions {
   allowSearch?: boolean;
   /** Accept a match only above this correlation. */
   minNcc?: number;
+  /**
+   * The true position is probably within ~this many level-0 px of the seed's
+   * (1σ): rank candidates with a distance penalty and drop those beyond 3σ.
+   * Identical copies elsewhere then lose to the one near the prediction.
+   */
+  priorSigma?: number | null;
 }
+
+/** Ranking penalty for a candidate far from the seed (0 at the seed, PRIOR_PENALTY at 3σ). */
+const PRIOR_PENALTY = 0.12;
+/** Two matches whose coarse+fine scores differ by less than this are a tie. */
+const AMBIGUOUS_MARGIN = 0.03;
+/** Without a prediction, accept a match only if the area is at least this wide (level-0 px, ≈110 CSS px). */
+const MIN_UNANCHORED_WIDTH = 55;
 
 export interface AlignAttempt extends MatchScore {
   transform: ViewTransform;
@@ -594,6 +607,8 @@ export interface AlignResult extends MatchScore {
   method: 'refine' | 'search';
   nccFine: number;
   confident: boolean;
+  /** Not confident because another, equally good match elsewhere exists (identical copies). */
+  ambiguous?: boolean;
   /** Every refinement tried (for diagnostics). */
   attempts: AlignAttempt[];
   /** Milliseconds per stage (diagnostics). */
@@ -683,13 +698,28 @@ export function align(refP: Pyramid, liveP: Pyramid, options: AlignOptions = {})
     timings[stage] = Math.round(now - clock);
     clock = now;
   };
+  // Distance of a candidate's reference centre from the seed's, in units of 3σ.
+  const { width: refW, height: refH } = refP.images[0]!;
+  const seed = options.seed ?? null;
+  const sigma = seed && options.priorSigma ? options.priorSigma : null;
+  const farness = (t: ViewTransform) => {
+    if (!seed || !sigma) return 0;
+    const dx = t.s * (refW / 2) + t.tx - (seed.s * (refW / 2) + seed.tx);
+    const dy = t.s * (refH / 2) + t.ty - (seed.s * (refH / 2) + seed.ty);
+    return Math.hypot(dx, dy) / (3 * sigma);
+  };
+  const penalty = (t: ViewTransform) => PRIOR_PENALTY * Math.min(1, farness(t)) ** 2;
   const consider = (r: RefineResult | null, method: AlignResult['method']) => {
     if (!r) return;
     attempts.push({ ...r, method });
-    const candidate: AlignResult = { ...r, method, confident: isConfident(r, minNcc), attempts, timings };
+    if (farness(r.transform) > 1) return; // beyond 3σ of the prediction: a copy elsewhere
+    // Right next to the prediction (within 1σ) less evidence is needed, as for
+    // confirming a prediction: views at other zooms render details differently.
+    const threshold = sigma && farness(r.transform) <= 1 / 3 ? Math.min(minNcc, LOCKED_MIN_NCC) : minNcc;
+    const candidate: AlignResult = { ...r, method, confident: isConfident(r, threshold), attempts, timings };
     // Rank by coarse and fine correlation together: look-alike frames score
-    // similarly when blurred but differ in their details.
-    const rank = (x: AlignResult) => x.ncc + x.nccFine;
+    // similarly when blurred but differ in their details. Near the prediction wins ties.
+    const rank = (x: AlignResult) => x.ncc + x.nccFine - penalty(x.transform);
     if (!best || rank(candidate) > rank(best)) best = candidate;
   };
 
@@ -726,14 +756,18 @@ export function align(refP: Pyramid, liveP: Pyramid, options: AlignOptions = {})
     const templateWidth = (maskWidth(refP) * hint) / 2 ** level;
     const step = Math.min(0.08, Math.max(0.02, 2.5 / templateWidth));
     const halfSteps = Math.max(1, Math.min(5, Math.ceil((options.scaleTolerance ?? 0.1) / step)));
-    candidates.push(...distinctCandidates(searchScales(refP, liveP, level, logRange(hint, halfSteps, step)), 8, width, height));
+    // With a prior, keep many peaks and drop far ones first: with identical
+    // copies in view, the one near the prediction may not be among the best few.
+    const found = searchScales(refP, liveP, level, logRange(hint, halfSteps, step), 0.12, sigma ? 40 : 5);
+    candidates.push(...distinctCandidates(found.filter((c) => farness(c.transform) <= 1.2), 8, width, height));
     lap(`search×${halfSteps * 2 + 1}@L${level}`);
   }
   if (!candidates.some((c) => c.ncc >= 0.6)) {
     // Broad sweep over 1/5×…5× at a coarse level.
     const level = levelForWidth(liveP, 72);
     const broad = logRange(1, 32, 0.05);
-    candidates.push(...distinctCandidates(searchScales(refP, liveP, level, broad, 0.12, 3), 8, width, height));
+    const found = searchScales(refP, liveP, level, broad, 0.12, sigma ? 12 : 3);
+    candidates.push(...distinctCandidates(found.filter((c) => farness(c.transform) <= 1.2), 8, width, height));
     lap('broad');
   }
   // Successive halving: refine all candidates coarsely, the best three at a
@@ -741,8 +775,10 @@ export function align(refP: Pyramid, liveP: Pyramid, options: AlignOptions = {})
   const top = Math.min(coarse + 1, refP.images.length - 1, liveP.images.length - 1);
   const mid = Math.min(1, top);
   const level2 = Math.min(2, top);
-  const byScore = (a: RefineResult, b: RefineResult) => b.ncc + b.nccFine - (a.ncc + a.nccFine);
+  const byScore = (a: RefineResult, b: RefineResult) =>
+    b.ncc + b.nccFine - penalty(b.transform) - (a.ncc + a.nccFine - penalty(a.transform));
   const coarseFits = candidates
+    .filter((c) => farness(c.transform) <= 1.2)
     .map((c) => refine(refP, liveP, c.transform, top, level2))
     .filter((r): r is RefineResult => r !== null)
     .sort(byScore);
@@ -755,6 +791,28 @@ export function align(refP: Pyramid, liveP: Pyramid, options: AlignOptions = {})
   lap('mid×3');
   if (midFits[0]) consider(refine(refP, liveP, midFits[0].transform, mid, 0), 'search');
   lap('final');
+  // Without a prediction, an almost equally good match elsewhere means
+  // identical copies in the file: pixels can't tell which one is ours, so
+  // don't guess. Small areas (zoomed far out) need a clearer winner: copies
+  // then differ only by pixel rounding.
+  const winner = best as AlignResult | null;
+  // Without a prediction, a match where the area is tiny on screen is a guess:
+  // at that size many places look alike.
+  if (!sigma && winner?.confident && refW * winner.transform.s < Math.min(MIN_UNANCHORED_WIDTH, 0.15 * refW)) {
+    return { ...winner, confident: false, ambiguous: true };
+  }
+  if (!sigma && winner?.confident) {
+    const centre = (t: ViewTransform) => ({ x: t.s * (refW / 2) + t.tx, y: t.s * (refH / 2) + t.ty });
+    const a = centre(winner.transform);
+    const score = (r: RefineResult) => r.ncc + r.nccFine;
+    const top = Math.max(...coarseFits.filter((r) => Math.hypot(centre(r.transform).x - a.x, centre(r.transform).y - a.y) <= 0.25 * refW * winner.transform.s).map(score), score(winner));
+    const rival = coarseFits.find((r) => {
+      const b = centre(r.transform);
+      return Math.hypot(a.x - b.x, a.y - b.y) > 0.25 * refW * winner.transform.s && r.ncc >= minNcc - 0.08;
+    });
+    const margin = AMBIGUOUS_MARGIN + (winner.transform.s < 0.1 ? 0.07 : 0);
+    if (rival && top - score(rival) < margin) return { ...winner, confident: false, ambiguous: true };
+  }
   return best;
 }
 

@@ -39,7 +39,7 @@ import {
   type TabResponses,
 } from '../shared/messages';
 import type { Capture, Settings, SettingsPatch, ViewportMetadata } from '../shared/schemas';
-import { IDENTITY_TRANSFORM, transformDistance, type ViewTransform } from '../shared/view-transform';
+import { IDENTITY_TRANSFORM, transformDistance, zoomViewAbout, type ViewTransform } from '../shared/view-transform';
 import { planFlight, smoothstep } from './flight';
 import {
   computeRegionGrid,
@@ -85,6 +85,12 @@ export interface OverlayUiState {
   marksOffscreen: boolean;
   /** The capture was taken on another Figma page than the one shown (its name). */
   otherPage: string | null;
+  /**
+   * Drawing makes sense now: no capture yet (Annotate takes one), notes pinned
+   * to the screen, or the captured area is on screen. Not when it is scrolled
+   * away, being searched for, or on another page.
+   */
+  canAnnotate: boolean;
   /** Global shortcuts as currently configured in Chrome (for tooltips). */
   shortcuts: Shortcuts;
 }
@@ -183,6 +189,8 @@ function captureCanvasCenter(capture: Capture): { x: number; y: number } {
 const FLIGHT_PAN_STEP = 100;
 /** Largest Ctrl+wheel delta per synthetic zoom step. */
 const FLIGHT_ZOOM_STEP = 8;
+/** Above this possible error (capture px) a flight approaches at a lower zoom and searches first. */
+const APPROACH_MIN_ERR = 40;
 
 /**
  * Where synthetic wheel input is aimed: the canvas centre in whole pixels.
@@ -264,6 +272,7 @@ export class OverlayController {
       followView: true,
       marksOffscreen: false,
       otherPage: null,
+      canAnnotate: true,
       shortcuts: { ...DEFAULT_SHORTCUTS },
     };
 
@@ -308,6 +317,7 @@ export class OverlayController {
           scaleTolerance: input.scaleTolerance,
           lockScale: input.lockScale,
           allowSearch: input.allowSearch,
+          priorSigma: input.priorSigma,
           region: input.region,
           exclude: this.ownUiRects(),
           viewport: { width: window.innerWidth, height: window.innerHeight },
@@ -390,6 +400,9 @@ export class OverlayController {
       case 'SET_MODE':
         this.setMode(command.mode);
         return this.status();
+      case 'OPEN_TOOLBAR':
+        await this.openToolbar();
+        return this.status();
       case 'TOGGLE_ANNOTATE':
         this.setMode(this.ui.mode === 'annotate' ? 'browse' : 'annotate');
         return this.status();
@@ -429,6 +442,19 @@ export class OverlayController {
       void this.takeCapture().catch(() => undefined);
       return;
     }
+    if (mode === 'annotate' && !this.canAnnotateHere()) {
+      // Marks drawn here would not be on the captured area: offer the two sensible choices.
+      this.setNotice({
+        id: 'info',
+        tone: 'info',
+        text: 'The area of these notes is not on screen, so there is nothing to draw on here.',
+        actions: [
+          { label: 'Go to notes', primary: true, run: () => (this.ui.view.status === 'following' && !this.ui.otherPage ? this.goToCapturedView() : this.findNotes()) },
+          { label: 'New capture here', run: () => void this.takeCapture().catch(() => undefined) },
+        ],
+      });
+      return;
+    }
     if (previous === 'annotate') {
       this.store.finishTextEdit();
       this.store.select(null);
@@ -463,6 +489,35 @@ export class OverlayController {
 
   close(): void {
     this.setMode('closed');
+  }
+
+  /**
+   * Toolbar icon / activate shortcut while the overlay is closed: show just the
+   * toolbar, with no capture yet. "Annotate" (or the shortcut again) takes the
+   * capture when you are ready to draw.
+   */
+  private async openToolbar(): Promise<void> {
+    if (this.ui.mode !== 'closed') return;
+    if (this.ui.capture) {
+      // A capture from earlier in this tab: start fresh instead of showing it.
+      this.store.finishTextEdit();
+      await this.autosaver.flush();
+      this.tracker.reset('off');
+      this.store.load(null, []);
+      this.autosaver.markClean();
+      this.clearReference();
+      this.setUi({ capture: null, saveStatus: { state: 'idle' } });
+    }
+    this.setMode('browse');
+    this.setNotice(
+      {
+        id: 'info',
+        tone: 'info',
+        text: `Ready. Click Annotate${this.ui.shortcuts.activate ? ` (or press ${this.ui.shortcuts.activate} again)` : ''} to capture this view and draw on it.`,
+        actions: [],
+      },
+      5_000,
+    );
   }
 
   // -- captures ----------------------------------------------------------------
@@ -743,15 +798,6 @@ export class OverlayController {
     if (!capture || !canvas || this.ui.view.status !== 'following') return;
     if (this.flight !== null) cancelAnimationFrame(this.flight);
     if (!correction) this.flightCorrections = 0;
-    if (!correction && this.tracker.needsOverview()) {
-      // Far away, or the tracked position became approximate: find the notes
-      // on the whole page first, then fly a short, confirmed trip to them.
-      this.pendingGoToView = true;
-      void this.tracker.locate({ explore: true, overview: true }).then((found) => {
-        if (!found) this.pendingGoToView = false;
-      });
-      return;
-    }
     const c = wheelOrigin(canvas);
     const capturedCenter = captureCanvasCenter(capture);
     const start = this.tracker.getSettled();
@@ -763,6 +809,16 @@ export class OverlayController {
       Math.abs(window.innerHeight - capture.viewportCssHeight) < 2 &&
       Math.hypot(target.tx, target.ty) < (capture.regionGrid?.cell ?? 16);
     if (sameLayout) target = { s: 1, tx: 0, ty: 0 };
+    // An uncertain prediction (e.g. after Figma's zoom limit) is approached at
+    // a lower zoom where the possible error fits on screen; the notes are then
+    // found there, near the prediction (never an identical copy elsewhere), and
+    // the final glide starts from a confirmed position.
+    const uncertainty = correction ? 0 : this.tracker.uncertainty();
+    const approach =
+      uncertainty > APPROACH_MIN_ERR
+        ? Math.min(0.8, Math.max(1 / 6, (0.7 * canvas.getBoundingClientRect().width) / (capture.viewportCssWidth + 2 * uncertainty)))
+        : 1;
+    if (approach < 1) target = zoomViewAbout(target, approach, c.x, c.y);
     const plan = planFlight(start, target, c, correction);
     let frame = 0;
     let panned = { x: 0, y: 0 };
@@ -794,10 +850,18 @@ export class OverlayController {
       const done = frame >= plan.panFrames + plan.zoomFrames;
       this.flight = done ? null : requestAnimationFrame(step);
       if (done) {
-        this.flightTarget = target;
-        if (!correction) this.tracker.expectLanding();
+        if (approach < 1) {
+          void this.findAfterApproach(uncertainty * approach);
+        } else {
+          this.flightTarget = target;
+          if (!correction) this.tracker.expectLanding();
+        }
       }
     };
+    if (approach < 1 && plan.panFrames + plan.zoomFrames === 0) {
+      void this.findAfterApproach(uncertainty * approach);
+      return;
+    }
     if (plan.panFrames + plan.zoomFrames === 0) {
       // Already there by the prediction: make sure it really is.
       this.flightTarget = target;
@@ -805,6 +869,25 @@ export class OverlayController {
       return;
     }
     this.flight = requestAnimationFrame(step);
+  }
+
+  /**
+   * After approaching an uncertain prediction: find the notes near it, then
+   * glide in from the confirmed position. If they are not near the prediction,
+   * search the whole page as a last resort.
+   */
+  private async findAfterApproach(sigmaLive: number): Promise<void> {
+    // Let Figma draw the new view; large files show blurry tiles at first, so look twice.
+    for (const wait of [250, 450]) {
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      if (await this.tracker.searchNear(sigmaLive + 40)) {
+        this.goToCapturedView(); // now certain: a direct glide
+        return;
+      }
+    }
+    this.pendingGoToView = true;
+    const found = await this.tracker.locate({ explore: true, overview: true });
+    if (!found) this.pendingGoToView = false;
   }
 
   /**
@@ -818,7 +901,9 @@ export class OverlayController {
     this.lastLandingRecovery = Date.now();
     this.flightTarget = null;
     this.pendingGoToView = true;
-    void this.tracker.locate({ explore: true }).then((found) => {
+    // Prefer matches near where we expected them (identical copies elsewhere).
+    const priorSigma = findFigmaCanvas()?.getBoundingClientRect().width ?? innerWidth;
+    void this.tracker.locate({ explore: true, priorSigma }).then((found) => {
       if (!found) this.pendingGoToView = false;
     });
   }
@@ -845,6 +930,8 @@ export class OverlayController {
     const shown = readFigmaPage();
     const otherPage = capturedOn && shown && shown !== capturedOn ? capturedOn : null;
     if (otherPage !== this.ui.otherPage) this.setUi({ otherPage });
+    const canAnnotate = this.canAnnotateHere();
+    if (canAnnotate !== this.ui.canAnnotate) this.setUi({ canAnnotate });
   }
 
   /** Are all marks outside the visible canvas under the committed view? */
@@ -874,6 +961,20 @@ export class OverlayController {
       offscreen = right < area.left || left > area.right || bottom < area.top || top > area.bottom;
     }
     if (offscreen !== this.ui.marksOffscreen) this.setUi({ marksOffscreen: offscreen });
+    const canAnnotate = this.canAnnotateHere();
+    if (canAnnotate !== this.ui.canAnnotate) this.setUi({ canAnnotate });
+  }
+
+  /** See OverlayUiState.canAnnotate. The captured area must show at least ~80×80 px of canvas. */
+  private canAnnotateHere(): boolean {
+    const { capture, view } = this.ui;
+    if (!capture || view.status === 'off') return true;
+    if (view.status !== 'following' || this.ui.otherPage) return false;
+    const t = view.transform;
+    const canvas = findFigmaCanvas()?.getBoundingClientRect() ?? new DOMRect(0, 0, window.innerWidth, window.innerHeight);
+    const w = Math.min(canvas.right, t.tx + t.s * capture.viewportCssWidth) - Math.max(canvas.left, t.tx);
+    const h = Math.min(canvas.bottom, t.ty + t.s * capture.viewportCssHeight) - Math.max(canvas.top, t.ty);
+    return w >= 80 && h >= 80;
   }
 
   setFollowView(followView: boolean, persist = true): void {

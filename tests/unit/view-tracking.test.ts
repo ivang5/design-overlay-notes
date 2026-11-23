@@ -41,13 +41,16 @@ describe('Ctrl+wheel zoom prediction', () => {
       [4, 0.98018],
       [16, 0.92371],
       [30, 0.86191],
-      [100, 0.79896],
       [200, 0.75498],
       [400, 0.7],
       [-10, 1.05135],
-      [-100, 1.25146],
+      // Precise (from 10 steps up to ~1000 %, where the label has 0.05 % resolution).
+      [-120, 1.26959],
+      [120, 0.78766],
+      [-100, 1.25182],
+      [100, 0.79883],
     ] as const) {
-      expect(Math.abs(figmaWheelZoom(dy) / factor - 1)).toBeLessThan(0.004);
+      expect(Math.abs(figmaWheelZoom(dy) / factor - 1)).toBeLessThan(Math.abs(dy) === 100 || Math.abs(dy) === 120 ? 0.0004 : 0.004);
     }
     expect(figmaWheelZoom(0)).toBe(1);
   });

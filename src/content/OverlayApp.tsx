@@ -84,6 +84,21 @@ export function OverlayApp({ controller }: { controller: OverlayController }) {
   );
   useLayoutEffect(() => applyLive());
   useEffect(() => controller.subscribeLive(applyLive), [controller, applyLive]);
+  // Resizing a Figma side panel moves the canvas edge: re-clip at once.
+  useEffect(() => {
+    const refresh = () => {
+      canvasRectRef.current.at = 0;
+      applyLive();
+    };
+    const observer = new ResizeObserver(refresh);
+    const canvas = findFigmaCanvas();
+    if (canvas) observer.observe(canvas);
+    window.addEventListener('resize', refresh);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', refresh);
+    };
+  }, [applyLive, showCanvas]);
 
   return (
     <>
@@ -309,7 +324,12 @@ function OverlayToolbar({
           type="button"
           className="don-text-btn is-primary"
           onClick={() => controller.setMode('annotate')}
-          title={withShortcut('Draw over the design', ui.shortcuts.activate)}
+          disabled={!ui.canAnnotate}
+          title={
+            ui.canAnnotate
+              ? withShortcut(capture ? 'Draw over the design' : 'Capture this view and draw over it', ui.shortcuts.activate)
+              : 'The area of these notes is not on screen. Go to them first, or take a new capture of this view (camera button).'
+          }
         >
           <Pencil size={15} aria-hidden="true" />
           Annotate

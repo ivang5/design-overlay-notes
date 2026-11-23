@@ -38,13 +38,13 @@ This builds the extension into `dist/`. To install it in Chrome:
 
 ## Usage
 
-Open a Figma file (`https://www.figma.com/{design,file,proto,board}/...`) and click the extension icon or press **Alt+Shift+D**. Press **Esc** or click **Done** to return to Figma.
+Open a Figma file (`https://www.figma.com/{design,file,proto,board}/...`) and click the extension icon or press **Alt+Shift+D** to open the toolbar. Click **Annotate** (or press the shortcut again) to capture the current view and draw. Press **Esc** or click **Done** to return to Figma.
 
 Notes are attached to the captured view, not to Figma layers. When you scroll or zoom, the extension finds the captured area again and moves the notes with it. If the area is not visible, the notes are hidden until you scroll back to it. Following can be turned off with the target button in the toolbar or in Settings. Take a new capture (**Alt+Shift+S**) for notes about a different area.
 
 | Shortcut                 | Action                                                                         |
 | ------------------------ | ------------------------------------------------------------------------------ |
-| Alt+Shift+D              | Start annotating / toggle drawing mode                                         |
+| Alt+Shift+D              | Open the toolbar / start or stop drawing                                       |
 | Alt+Shift+S              | New capture                                                                    |
 | Alt+Shift+O              | Hide / show notes                                                              |
 | V P H A R O T S E        | Select, pen, highlighter, arrow, rectangle, ellipse, text, sticky note, eraser |

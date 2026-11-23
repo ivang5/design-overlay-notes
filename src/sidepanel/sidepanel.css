@@ -45,6 +45,22 @@
   gap: 10px;
 }
 
+/* "New capture" stays on one line; the file name shrinks instead. */
+.dp-current-row > .dp-btn {
+  flex: none;
+  white-space: nowrap;
+}
+
+.dp-current-text {
+  flex: 1;
+}
+
+/* Buttons as wide as their label in stacked settings sections. */
+.dp-btn.is-fit {
+  align-self: flex-start;
+  width: auto;
+}
+
 .dp-current-text strong {
   display: block;
   overflow: hidden;

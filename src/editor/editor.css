@@ -185,6 +185,13 @@
   background: #1971c2;
 }
 
+.don-text-btn:disabled,
+.don-text-btn:disabled:hover {
+  background: var(--don-hover);
+  color: var(--don-muted);
+  cursor: not-allowed;
+}
+
 .don-grip {
   display: inline-flex;
   align-items: center;

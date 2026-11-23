@@ -63,6 +63,8 @@ export interface AlignRequestInput {
   lockScale: boolean;
   /** May look far from the seed (full search)? Routine checks only fine-tune. */
   allowSearch: boolean;
+  /** Searches: the true position is probably within ~this many CSS px of the seed (null: anywhere). */
+  priorSigma: number | null;
   region: RegionGrid | null;
 }
 
@@ -120,7 +122,7 @@ export const WHEEL_PAN_CLAMP = 120;
  */
 export function figmaWheelZoom(deltaY: number): number {
   const magnitude = Math.abs(deltaY);
-  const effective = Math.min(magnitude, 9.6549 * Math.cbrt(magnitude));
+  const effective = Math.min(magnitude, 9.679 * Math.cbrt(magnitude));
   return Math.exp(-Math.sign(deltaY) * 0.005 * effective);
 }
 
@@ -189,6 +191,10 @@ const maySearch = (kind: Pending) => kind === 'drag' || kind === 'recheck' || ki
  * "2%" while the real minimum is 1/64 ≈ 1.56 %; measured from real wheel input).
  */
 const FIGMA_ZOOM_MIN = 1 / 64;
+/** Relative error of the Ctrl+wheel zoom model per unit of |ln factor| (measured within ~0.2 %). */
+const ZOOM_MODEL_ERR = 0.0005;
+/** Second look at a landing that did not match at first (Figma still drawing). */
+const LANDING_RECHECK_MS = 450;
 const FIGMA_ZOOM_MAX = 256;
 
 /**
@@ -238,8 +244,16 @@ export class ViewTracker {
   private lastClickVerify = 0;
   /** One extra search when a confirmation unexpectedly fails while the area should be visible. */
   private suspectRetry = false;
-  /** Figma stopped at a zoom limit since the last confirmation: positions since are approximate. */
-  private limitHit = false;
+  /**
+   * How far off the prediction may be since the last confirmation: relative
+   * scale error, and position error (capture px). Pans move the area exactly
+   * on screen and add nothing. A zoom whose factor is off by δ moves the area
+   * by δ × its distance from the zoom point: tiny with the measured wheel
+   * model, but larger at Figma's zoom limit (where our rounded calibration of
+   * the captured zoom decides the clamped factor).
+   */
+  private scaleErr = 0;
+  private posErr = 0;
   /** Figma's zoom as last predicted (see currentFigmaZoom). */
   private zoomEstimate: number | null = null;
   private lastZoomAt = 0;
@@ -247,6 +261,10 @@ export class ViewTracker {
   private recheckedAt: ViewTransform | null = null;
   /** The next used check result is the one after a flight to the notes. */
   private landing = false;
+  /** The notes were lost and the user is moving around: each settled view is searched. */
+  private searchingAfterLost = false;
+  /** The landing check already looked twice (Figma may still draw blurry tiles at first). */
+  private landingRetried = false;
   /** Figma zoom readout and our scale at the last confirmed alignment. */
   private confirmed: { zoom: number; s: number } | null = null;
   /**
@@ -300,6 +318,22 @@ export class ViewTracker {
       this.spaceDown = false;
     });
     on('resize', () => this.onResize());
+    // Resizing Figma's side panels resizes its canvas without a window resize.
+    this.canvasObserver = new ResizeObserver(() => this.onResize());
+    this.observeCanvas();
+    this.cleanups.push(() => this.canvasObserver.disconnect());
+  }
+
+  private readonly canvasObserver: ResizeObserver;
+  private observedCanvas: HTMLCanvasElement | null = null;
+
+  /** Watch Figma's canvas element for size changes (re-attached if Figma replaces it). */
+  private observeCanvas(): void {
+    const canvas = findFigmaCanvas();
+    if (canvas === this.observedCanvas) return;
+    if (this.observedCanvas) this.canvasObserver.unobserve(this.observedCanvas);
+    this.observedCanvas = canvas;
+    if (canvas) this.canvasObserver.observe(canvas);
   }
 
   getState(): ViewState {
@@ -339,7 +373,13 @@ export class ViewTracker {
     this.suspectRetry = false;
     this.recheckedAt = null;
     this.landing = false;
-    this.limitHit = false;
+    this.searchingAfterLost = false;
+    // The uncertainty belongs to the tracked view, not to the capture: keep it
+    // when a capture is shown at a position predicted from it.
+    if (placed || status === 'off') {
+      this.scaleErr = 0;
+      this.posErr = 0;
+    }
     this.scaleTrusted = status === 'following';
     const zoom = readFigmaZoom();
     if (status === 'following' && zoom) {
@@ -356,22 +396,38 @@ export class ViewTracker {
   }
 
   /**
-   * Before flying to the notes: is the predicted position too unreliable or
-   * too far away to fly by? (Figma hit a zoom limit since the last check, or
-   * the area is more than 3 canvas widths outside the view.) Then the caller
-   * should locate({ overview: true }) first and fly a short, confirmed trip.
+   * How far (capture px, at the captured zoom) the shown capture's predicted
+   * position may be off since the last confirmation.
    */
-  needsOverview(): boolean {
-    if (this.limitHit) return true;
-    const size = this.delegate.captureSize();
-    const canvas = findFigmaCanvas()?.getBoundingClientRect();
-    if (!size || !canvas) return false;
-    const t = this.getSettled();
-    const cx = t.tx + (t.s * size.width) / 2;
-    const cy = t.ty + (t.s * size.height) / 2;
-    const dx = Math.max(canvas.left - cx, 0, cx - canvas.right);
-    const dy = Math.max(canvas.top - cy, 0, cy - canvas.bottom);
-    return Math.hypot(dx, dy) > 3 * canvas.width;
+  uncertainty(): number {
+    const width = this.delegate.captureSize()?.width ?? 1400;
+    return this.posErr + (this.scaleErr * width) / 2;
+  }
+
+  /** Relative error of the predicted scale (for scale hints). */
+  scaleUncertainty(): number {
+    return this.scaleErr;
+  }
+
+  /**
+   * Search the current view for the shown capture near its predicted position
+   * (within ~`sigmaLive` CSS px), at a known scale. Used after flying to an
+   * uncertain prediction at a lower zoom. Applies the result when found.
+   */
+  async searchNear(sigmaLive: number): Promise<boolean> {
+    trace(`approach: search near s=${this.live.s.toFixed(4)} t=${this.live.tx.toFixed(0)},${this.live.ty.toFixed(0)} σ=${sigmaLive.toFixed(0)}px (uncertainty ${this.uncertainty().toFixed(0)}, scale ±${(this.scaleErr * 100).toFixed(1)} %)`);
+    if (this.locating) return false;
+    this.locating = true;
+    this.locateAborted = false;
+    while (this.inFlight) await sleep(30);
+    this.clearSettle();
+    this.pending = 'none';
+    try {
+      const s = this.live.s;
+      return await this.alignHere({ scaleHint: s, scaleTolerance: Math.min(0.2, this.scaleErr * 1.5 + 0.01) }, sigmaLive);
+    } finally {
+      this.locating = false;
+    }
   }
 
   /**
@@ -381,6 +437,7 @@ export class ViewTracker {
    */
   expectLanding(): void {
     this.landing = true;
+    this.landingRetried = false;
     this.schedule('verify', SETTLE_MS);
   }
 
@@ -412,7 +469,7 @@ export class ViewTracker {
    * searches again, and finally searches the whole page ("Zoom to fit").
    * Returns whether it was found. Real user input cancels the exploration.
    */
-  async locate(options: { explore: boolean; justLoaded?: boolean; overview?: boolean }): Promise<boolean> {
+  async locate(options: { explore: boolean; justLoaded?: boolean; overview?: boolean; priorSigma?: number }): Promise<boolean> {
     if (this.locating) return false;
     // Claim control first: a check still in flight must not apply its result.
     this.locating = true;
@@ -427,7 +484,8 @@ export class ViewTracker {
     try {
       // `overview`: the area is far away or its position is not reliable: go
       // straight to the whole page instead of looking around here first.
-      if (!options.overview && (await this.alignHere())) return true;
+      const prior = options.priorSigma ?? null;
+      if (!options.overview && (await this.alignHere(undefined, prior))) return true;
       if (options.justLoaded && !options.overview && !aborted()) {
         // Figma may still be drawing the canvas right after loading.
         await sleep(1_200);
@@ -456,7 +514,7 @@ export class ViewTracker {
           scaleHint: (startZoom * zoomApplied) / captureZoom,
           scaleTolerance: 0.005 / startZoom + 0.005 / captureZoom + 0.006,
         };
-        if (await this.alignHere(hint)) return true;
+        if (await this.alignHere(hint, prior ? prior * zoomApplied : null)) return true;
       }
       // Not near the current view (e.g. after a reload Figma restores another
       // view): show the whole page with Figma's "Zoom to fit" and search there.
@@ -490,9 +548,9 @@ export class ViewTracker {
   }
 
   /** One alignment of the current view for locate(); applies the result when found. */
-  private async alignHere(hint?: { scaleHint: number; scaleTolerance: number }): Promise<boolean> {
+  private async alignHere(hint?: { scaleHint: number; scaleTolerance: number }, priorSigma: number | null = null): Promise<boolean> {
     const generation = this.generation;
-    const request = { ...this.buildRequest('unknown', this.live, false), ...hint };
+    const request = { ...this.buildRequest('unknown', this.live, false), ...hint, priorSigma };
     const result = await this.delegate.align(request).catch(() => null);
     if (!result || generation !== this.generation || this.locateAborted) return false;
     if (result.status !== 'aligned') return false;
@@ -547,21 +605,18 @@ export class ViewTracker {
       let clamped = false;
       if (before) {
         const after = Math.min(FIGMA_ZOOM_MAX, Math.max(FIGMA_ZOOM_MIN, before * factor));
-        clamped = Math.abs(after - before * factor) > after * 1e-6;
+        // Reaching the limit is uncertain once; staying at it changes nothing.
+        clamped = Math.abs(after - before * factor) > after * 1e-6 && Math.abs(after - before) > after * 1e-6;
         factor = after / before;
         this.zoomEstimate = after;
       }
       this.lastZoomAt = performance.now();
+      // The zoom model is good to ~0.2 % per unit of ln(factor); at a limit,
+      // Figma's exact zoom vs. our rounded calibration adds ~1 %.
+      const rel = ZOOM_MODEL_ERR * Math.abs(Math.log(factor)) + (clamped ? (this.zoomRatio?.error ?? 0.006) + 0.004 : 0);
+      this.growUncertainty(rel, zoom.x, zoom.y);
       if (Math.abs(factor - 1) > 1e-9) this.viewChanged(zoomDelta(factor, zoom.x, zoom.y), 'exact');
-      if (clamped) {
-        // Figma's exact limit and our rounded zoom calibration differ by ~1 %:
-        // at the minimum zoom every drag spans tens of thousands of design px,
-        // so positions from here on are only approximate. Don't navigate by the
-        // tracked frame, and find the area before flying to it (needsOverview).
-        this.frame.view = null;
-        this.limitHit = true;
-        this.scaleTrusted = false;
-      }
+      if (clamped) this.scaleTrusted = false; // let the next check measure the scale
     }
   }
 
@@ -579,6 +634,21 @@ export class ViewTracker {
       }
     }
     return this.zoomEstimate;
+  }
+
+  /**
+   * A zoom around (x, y) with relative error `rel`: the scale becomes less
+   * certain, and the area moves by its distance from (x, y) times the error.
+   */
+  private growUncertainty(rel: number, x: number, y: number): void {
+    if (rel <= 0) return;
+    const s = this.active() ? this.live.s : (this.frame.view?.s ?? this.live.s);
+    const size = this.delegate.captureSize();
+    const t = this.live;
+    const ax = size && this.active() ? t.tx + (t.s * size.width) / 2 : innerWidth / 2;
+    const ay = size && this.active() ? t.ty + (t.s * size.height) / 2 : innerHeight / 2;
+    this.scaleErr += rel;
+    this.posErr += (Math.hypot(x - ax, y - ay) / Math.max(s, 1e-6)) * rel;
   }
 
   /** Real input while locate() is navigating hands control back to the user. */
@@ -721,14 +791,14 @@ export class ViewTracker {
   }
 
   private onResize(): void {
+    this.observeCanvas();
     if (!this.watching()) return;
-    // Figma keeps the canvas content anchored to the canvas' top-left corner.
+    // Figma keeps the design where it is on screen when the canvas resizes
+    // (measured: widening the left panel by 120 px moved the canvas edge, not
+    // the design). Only confirm; the overlay re-clips to the new canvas edge.
     const rect = findFigmaCanvas()?.getBoundingClientRect() ?? null;
     if (rect && this.canvasRect) {
-      const dx = rect.left - this.canvasRect.left;
-      const dy = rect.top - this.canvasRect.top;
-      if (dx || dy) this.viewChanged(panDelta(dx, dy), 'predicted');
-      else if (this.active()) this.schedule('verify', SETTLE_AFTER_KEYS_MS);
+      if (this.active()) this.schedule('verify', SETTLE_AFTER_KEYS_MS);
     } else {
       this.viewChanged(null, 'unknown');
     }
@@ -750,9 +820,12 @@ export class ViewTracker {
       transform = { s: ds * target.s, tx: ds * target.tx + dtx, ty: ds * target.ty + dty };
     }
     this.setLive(transform);
-    // While lost, motion may bring the area back: search again (marks stay hidden).
+    // While lost, motion may bring the area back: search the view again after
+    // each move (marks stay hidden; only an unambiguous match is accepted).
+    if (this.state.status === 'lost') this.searchingAfterLost = true;
+    const lost = this.searchingAfterLost && this.state.status !== 'following';
     if (this.state.status === 'lost') this.commit({ transform, status: 'searching' });
-    this.schedule(kind, SETTLE_MS);
+    this.schedule(lost ? 'unknown' : kind, SETTLE_MS);
   }
 
   private schedule(kind: Pending, delay: number): void {
@@ -828,7 +901,14 @@ export class ViewTracker {
           this.schedule('verify', CONFIRM_AFTER_SEARCH_MS);
         }
       } else if (result.status === 'not-found' || !consistent) {
-        if (landing) {
+        if (landing && !this.landingRetried) {
+          // Large files are drawn progressively (blurry tiles first): look again
+          // shortly before concluding that the notes aren't here.
+          this.landingRetried = true;
+          this.landing = true;
+          trace('landing not confirmed yet: checking again');
+          this.schedule('verify', LANDING_RECHECK_MS);
+        } else if (landing) {
           // Flew to where the notes should be, but they aren't there (input we
           // could not model on the way): find them for real instead of trusting it.
           trace('landing not confirmed: searching');
@@ -892,9 +972,24 @@ export class ViewTracker {
       scaleTolerance,
       lockScale: (kind === 'exact' || kind === 'verify' || kind === 'drag') && this.scaleTrusted,
       allowSearch: maySearch(kind),
+      priorSigma: this.priorSigmaFor(kind, seed, canvas),
       region,
       liveZoom,
     };
+  }
+
+  /**
+   * How close to the prediction a search result must be (CSS px, ~1σ). The
+   * file may contain identical copies of the captured area; only the
+   * prediction tells them apart. Null for unknown jumps (anywhere).
+   */
+  private priorSigmaFor(kind: Pending, seed: ViewTransform, canvas: HTMLCanvasElement | null): number | null {
+    if (kind === 'unknown' || this.state.status === 'lost') return null;
+    const canvasWidth = canvas?.getBoundingClientRect().width ?? innerWidth;
+    // Input we could follow: within the tracked uncertainty. Input we could not
+    // (drags of unknown kind, keyboard): probably still near, but loosely.
+    if (kind === 'drag' || kind === 'predicted') return canvasWidth / 2;
+    return Math.max(30, this.uncertainty() * seed.s * 1.5 + 20);
   }
 
   /**
@@ -941,7 +1036,11 @@ export class ViewTracker {
   private acceptAligned(transform: ViewTransform, liveZoom: number | null, kind: Pending, scaleKept: boolean): void {
     this.suspectRetry = false;
     this.recheckedAt = null;
-    this.limitHit = false;
+    this.searchingAfterLost = false;
+    // Confirmed: only the measurement's own precision remains (a scale found
+    // while the area looks small is only good to a few percent).
+    this.scaleErr = transform.s >= PRECISE_SCALE_MIN || scaleKept ? 0.001 : 0.025;
+    this.posErr = 1 / Math.max(transform.s, 1e-3);
     // A scale measured while the area looks small (zoomed far out) is only
     // roughly known: don't lock it for later checks, let them refine it.
     this.scaleTrusted = scaleKept || transform.s >= PRECISE_SCALE_MIN;

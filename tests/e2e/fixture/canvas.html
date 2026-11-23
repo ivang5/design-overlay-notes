@@ -111,7 +111,7 @@
         if (e.ctrlKey || e.metaKey) {
           // Like Figma: pans apply at once, zoom steps at the next frame.
           const m = Math.abs(e.deltaY);
-          const factor = Math.exp(-Math.sign(e.deltaY) * 0.005 * Math.min(m, 9.6549 * Math.cbrt(m)));
+          const factor = Math.exp(-Math.sign(e.deltaY) * 0.005 * Math.min(m, 9.679 * Math.cbrt(m)));
           const x = e.clientX, y = e.clientY;
           requestAnimationFrame(() => zoomAbout(factor, x, y));
         } else {

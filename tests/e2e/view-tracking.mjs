@@ -69,6 +69,9 @@ try {
   };
 
   // Capture-time fixture view: capture px → live px = V_live ∘ V_cap⁻¹.
+  // First activation opens the toolbar only; the second captures and starts drawing.
+  await sw.evaluate((id) => globalThis.__overlayNotesE2E.activate(id), tabId);
+  await page.waitForTimeout(300);
   await sw.evaluate((id) => globalThis.__overlayNotesE2E.activate(id), tabId);
   await waitFor(async () => ({ ok: (await overlayView())?.status === 'following' }), 'tracking to start');
   const captureView = await fixtureView();

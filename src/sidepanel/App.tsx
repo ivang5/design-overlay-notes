@@ -161,7 +161,7 @@ export function App() {
           <p className="dp-muted dp-hint">
             {info.url && !info.supported
               ? 'This tab is not a Figma design file.'
-              : `Open a Figma design, then click the extension icon (or press ${DEFAULT_SHORTCUTS.activate}) to capture the view and start drawing.`}
+              : `Open a Figma design, then click the extension icon (or press ${DEFAULT_SHORTCUTS.activate}) to open the toolbar, then click Annotate to capture the view and draw.`}
           </p>
         )}
       </section>
@@ -236,7 +236,7 @@ export function App() {
             </p>
             <ol>
               <li>Open a Figma design in this window.</li>
-              <li>Click the Design Overlay Notes icon in the toolbar (or press {DEFAULT_SHORTCUTS.activate}).</li>
+              <li>Click the Design Overlay Notes icon in the toolbar (or press {DEFAULT_SHORTCUTS.activate}), then click Annotate.</li>
               <li>Draw and write over the design. Notes save automatically.</li>
             </ol>
           </div>

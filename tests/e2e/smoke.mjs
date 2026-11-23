@@ -126,13 +126,26 @@ try {
     );
 
   // --- activation + capture ---------------------------------------------------
+  // First click on the icon: only the toolbar, no capture yet.
   await sw.evaluate((id) => globalThis.__overlayNotesE2E.activate(id), tabId);
+  const opened = await waitFor(
+    () => sw.evaluate((id) => chrome.tabs.sendMessage(id, { type: 'PING' }, { frameId: 0 }).catch(() => null), tabId).then((r) => (r?.data?.mode === 'browse' ? r.data : null)),
+    'toolbar shown',
+  );
+  // (Don't read IndexedDB here: opening a missing database would create an empty one.)
+  assert.equal(opened.captureId, null, 'no capture on the first activation');
+  // Second click (or Annotate): capture the view and start drawing.
+  await sw.evaluate((id) => globalThis.__overlayNotesE2E.activate(id), tabId);
+  await waitFor(
+    () => sw.evaluate((id) => chrome.tabs.sendMessage(id, { type: 'PING' }, { frameId: 0 }).catch(() => null), tabId).then((r) => r?.data?.captureId ?? null),
+    'capture taken',
+  );
   const captures = await waitFor(async () => {
     const rows = await readStore('captures');
     return rows.length === 1 ? rows : null;
   }, 'first capture');
   const capture = captures[0];
-  log('toolbar activation created a capture before showing the overlay');
+  log('first activation shows only the toolbar; the second captures the view and starts drawing');
   assert.equal(await page.locator('design-overlay-notes').count(), 1, 'exactly one overlay host');
   assert.equal(await page.evaluate(() => document.querySelector('design-overlay-notes').shadowRoot), null, 'closed shadow root');
   log('one overlay host mounted with a closed Shadow DOM');

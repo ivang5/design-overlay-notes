@@ -80,6 +80,12 @@ export const contentRequestSchema = z.discriminatedUnion('type', [
     lockScale: z.boolean(),
     /** Allow a full search away from the seed (otherwise refine near it only). */
     allowSearch: z.boolean(),
+    /**
+     * How far (CSS px, ~1σ) the true position may be from the seed. Searches
+     * then prefer matches near the seed and ignore those beyond 3σ, so an
+     * identical copy elsewhere in the file is not picked.
+     */
+    priorSigma: z.number().min(1).max(1_000_000).nullable().optional(),
     /** Live viewport cells showing the Figma canvas. */
     region: regionGridSchema.nullable(),
     /** Live areas to ignore (our toolbar, banners), CSS px. */
@@ -185,6 +191,8 @@ export const tabCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('CAPTURE_START') }),
   z.object({ type: z.literal('SET_MODE'), mode: overlayModeSchema }),
   z.object({ type: z.literal('TOGGLE_ANNOTATE') }),
+  /** Show the toolbar without taking a capture (icon / shortcut while the overlay is closed). */
+  z.object({ type: z.literal('OPEN_TOOLBAR') }),
   z.object({ type: z.literal('TOGGLE_VISIBILITY') }),
   z.object({ type: z.literal('GET_VIEWPORT') }),
   z.object({
@@ -221,6 +229,7 @@ export interface TabResponses {
   CAPTURE_START: { captureId: string };
   SET_MODE: OverlayStatus;
   TOGGLE_ANNOTATE: OverlayStatus;
+  OPEN_TOOLBAR: OverlayStatus;
   TOGGLE_VISIBILITY: OverlayStatus;
   GET_VIEWPORT: LiveViewportInfo;
   SHOW_CAPTURE: OverlayStatus;

@@ -203,3 +203,32 @@ describe('view alignment', () => {
     expect(result?.confident ?? false).toBe(false);
   });
 });
+
+describe('identical copies of the captured area', () => {
+  // The live view shows the same content twice, side by side (copy-pasted frames).
+  const ref = render(REF_VIEW, W, H);
+  const refP = buildPyramid(ref, createMask(W, H));
+  const gap = 40;
+  const live = createImage(2 * W + gap, H);
+  live.data.fill(BACKGROUND);
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) {
+      live.data[j * live.width + i] = ref.data[j * W + i]!;
+      live.data[j * live.width + W + gap + i] = ref.data[j * W + i]!;
+    }
+  }
+  const liveP = buildPyramid(live, createMask(live.width, live.height));
+
+  it('picks the copy near the prediction', () => {
+    const seed = { s: 1, tx: W + gap + 25, ty: -15 };
+    const result = align(refP, liveP, { seed, scaleHint: 1, scaleTolerance: 0.02, priorSigma: 40 });
+    expect(result?.confident).toBe(true);
+    expectClose(result!.transform, { s: 1, tx: W + gap, ty: 0 }, 1);
+  });
+
+  it('refuses to choose between them without a prediction', () => {
+    const result = align(refP, liveP, { scaleHint: 1, scaleTolerance: 0.02 });
+    expect(result?.confident ?? false).toBe(false);
+    expect(result?.ambiguous).toBe(true);
+  });
+});

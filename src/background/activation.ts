@@ -27,11 +27,9 @@ export async function activateOnTab(tab: chrome.tabs.Tab): Promise<void> {
     await sendToTab(tab.id, { type: 'SHOW_CAPTURE', captureId: pending, goToView: true });
     return;
   }
-  if (!status.captureId || status.mode === 'closed') {
-    await sendToTab(tab.id, { type: 'CAPTURE_START' });
-  } else {
-    await sendToTab(tab.id, { type: 'TOGGLE_ANNOTATE' });
-  }
+  // Closed: just the toolbar (the capture is taken when you start annotating).
+  // Open: start/stop drawing (taking the capture first if there is none yet).
+  await sendToTab(tab.id, { type: status.mode === 'closed' ? 'OPEN_TOOLBAR' : 'TOGGLE_ANNOTATE' });
 }
 
 export async function newCaptureOnTab(tab: chrome.tabs.Tab): Promise<string> {
